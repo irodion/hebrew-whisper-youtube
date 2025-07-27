@@ -12,6 +12,7 @@ from rich.table import Table
 from rich.panel import Panel
 from .downloader import AudioDownloader
 from .transcriber import WhisperTranscriber
+from .metadata_formatter import MetadataFormatter
 from .utils import (
     TranscriptionError, DownloadError, GPUError,
     validate_url, check_cuda_availability
@@ -35,9 +36,9 @@ console = Console()
 )
 @click.option(
     '-f', '--format',
-    type=click.Choice(['text', 'srt', 'vtt']),
+    type=click.Choice(['text', 'srt', 'vtt', 'json']),
     default='text',
-    help='Output format'
+    help='Output format (text includes metadata header, json includes full metadata)'
 )
 @click.option(
     '--device',
@@ -114,7 +115,7 @@ def main(url, output, model, language, format, device, keep_audio, verbose):
         downloader = AudioDownloader()
         
         try:
-            audio_path = downloader.download(url, keep_audio=keep_audio)
+            audio_path, metadata = downloader.download(url, keep_audio=keep_audio)
             audio_size = os.path.getsize(audio_path) / (1024 * 1024)  # MB
             console.print(f"[green]✓[/green] Downloaded audio: {audio_size:.1f} MB")
         except DownloadError as e:
@@ -131,7 +132,8 @@ def main(url, output, model, language, format, device, keep_audio, verbose):
             transcript = transcriber.transcribe(
                 audio_path,
                 language=language,
-                output_format=format
+                output_format=format,
+                metadata=metadata
             )
             
             # Show preview of transcript
@@ -152,11 +154,24 @@ def main(url, output, model, language, format, device, keep_audio, verbose):
             transcript = transcriber.transcribe(
                 audio_path,
                 language=language,
-                output_format=format
+                output_format=format,
+                metadata=metadata
             )
             
         # Step 3: Save transcript
         console.rule("[bold]Step 3/3: Saving Transcript[/bold]")
+        
+        # Add metadata header for text format
+        if format == 'text':
+            header = MetadataFormatter.format_text_header(metadata)
+            transcript = header + transcript
+        elif format == 'vtt':
+            # For VTT, prepend metadata as comments
+            vtt_header = MetadataFormatter.format_vtt_metadata(metadata)
+            # Remove existing WEBVTT header if present and use our metadata-enhanced one
+            if transcript.startswith('WEBVTT'):
+                transcript = transcript[6:].lstrip('\n')
+            transcript = vtt_header + transcript
         
         with open(output_path, 'w', encoding='utf-8') as f:
             f.write(transcript)
