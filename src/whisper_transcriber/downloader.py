@@ -6,7 +6,7 @@ Licensed under the MIT License - see LICENSE file for details.
 import os
 import shutil
 import tempfile
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 from yt_dlp import YoutubeDL
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, DownloadColumn
 from .utils import DownloadError, console, check_disk_space
@@ -28,16 +28,16 @@ class AudioDownloader:
             if total > 0:
                 self._progress.update(self._task_id, total=total, completed=downloaded)
                 
-    def download(self, url: str, keep_audio: bool = False) -> str:
+    def download(self, url: str, keep_audio: bool = False) -> Tuple[str, Dict[str, Any]]:
         """
-        Download audio from YouTube URL.
+        Download audio from YouTube URL and extract metadata.
         
         Args:
             url: YouTube video URL
             keep_audio: Whether to keep the audio file after transcription
             
         Returns:
-            Path to the downloaded WAV file
+            Tuple of (path to the downloaded WAV file, video metadata dict)
             
         Raises:
             DownloadError: If download fails
@@ -76,13 +76,25 @@ class AudioDownloader:
                 
                 with YoutubeDL(ydl_opts) as ydl:
                     info = ydl.extract_info(url, download=False)
-                    title = info.get('title', 'Unknown')
-                    duration = info.get('duration', 0)
                     
-                    console.print(f"[bold]Title:[/bold] {title}")
-                    if duration:
+                    # Extract metadata
+                    metadata = {
+                        'title': info.get('title', 'Unknown'),
+                        'duration': info.get('duration', 0),
+                        'uploader': info.get('uploader', 'Unknown'),
+                        'upload_date': info.get('upload_date', ''),
+                        'description': info.get('description', ''),
+                        'view_count': info.get('view_count', 0),
+                        'like_count': info.get('like_count', 0),
+                        'channel': info.get('channel', ''),
+                        'channel_id': info.get('channel_id', ''),
+                        'webpage_url': info.get('webpage_url', url)
+                    }
+                    
+                    console.print(f"[bold]Title:[/bold] {metadata['title']}")
+                    if metadata['duration']:
                         from .utils import format_time
-                        console.print(f"[bold]Duration:[/bold] {format_time(duration)}")
+                        console.print(f"[bold]Duration:[/bold] {format_time(metadata['duration'])}")
                     
                     ydl.download([url])
                     
@@ -93,7 +105,7 @@ class AudioDownloader:
         if not os.path.exists(wav_path):
             raise DownloadError("Audio conversion to WAV failed")
             
-        return wav_path
+        return wav_path, metadata
     
     def cleanup(self) -> None:
         """Clean up temporary files."""

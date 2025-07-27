@@ -4,7 +4,8 @@ Copyright (c) 2025 Whisper Transcriber Contributors
 Licensed under the MIT License - see LICENSE file for details.
 """
 import os
-from typing import Optional, List, Any
+from typing import Optional, List, Any, Dict
+import json
 from faster_whisper import WhisperModel
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn
 from .utils import GPUError, console, check_cuda_availability
@@ -119,7 +120,8 @@ class WhisperTranscriber:
         audio_path: str,
         language: Optional[str] = None,
         task: str = "transcribe",
-        output_format: str = "text"
+        output_format: str = "text",
+        metadata: Optional[Dict[str, Any]] = None
     ) -> str:
         """
         Transcribe audio file.
@@ -128,7 +130,8 @@ class WhisperTranscriber:
             audio_path: Path to audio file
             language: Language code (None for auto-detect)
             task: 'transcribe' or 'translate'
-            output_format: 'text', 'srt', or 'vtt'
+            output_format: 'text', 'srt', 'vtt', or 'json'
+            metadata: Optional video metadata dict for enhanced output
             
         Returns:
             Transcribed text in requested format
@@ -197,6 +200,8 @@ class WhisperTranscriber:
             return self._format_as_srt(segments_list)
         elif output_format == "vtt":
             return self._format_as_vtt(segments_list)
+        elif output_format == "json":
+            return self._format_as_json(segments_list, metadata or {}, info)
         else:
             raise ValueError(f"Unknown output format: {output_format}")
             
@@ -239,3 +244,30 @@ class WhisperTranscriber:
         minutes = int((seconds % 3600) // 60)
         secs = seconds % 60
         return f"{hours:02d}:{minutes:02d}:{secs:06.3f}"
+        
+    def _format_as_json(self, segments: List[Any], metadata: Dict[str, Any], info: Any) -> str:
+        """Format segments and metadata as JSON."""
+        from .metadata_formatter import MetadataFormatter
+        
+        # Format segments with timestamps
+        transcript_segments = []
+        for segment in segments:
+            transcript_segments.append({
+                "start": round(segment.start, 3),
+                "end": round(segment.end, 3),
+                "text": segment.text.strip()
+            })
+        
+        # Clean metadata for JSON
+        clean_metadata = MetadataFormatter.format_json_metadata(metadata.copy())
+        
+        # Add transcription info
+        clean_metadata['detected_language'] = getattr(info, 'language', None)
+        clean_metadata['transcription_model'] = self.model_size
+        
+        output = {
+            "metadata": clean_metadata,
+            "transcript": transcript_segments
+        }
+        
+        return json.dumps(output, ensure_ascii=False, indent=2)
