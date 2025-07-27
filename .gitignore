@@ -145,6 +145,11 @@ settings.local.json
 .dmypy.json
 dmypy.json
 
+# ruff
+.ruff_cache/
+
+# pre-commit
+
 # Local notes and todo files
 notes.txt
 TODO.txt

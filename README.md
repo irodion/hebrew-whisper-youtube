@@ -93,7 +93,7 @@ whisper-transcriber -v "https://youtube.com/watch?v=VIDEO_ID" output.txt
 
 ### Hebrew-Optimized Models (Recommended for Hebrew content)
 - `ivrit-turbo`: Fast Hebrew transcription, 809M parameters (default)
-- `ivrit-large`: Highest quality Hebrew transcription, 1.5B parameters  
+- `ivrit-large`: Highest quality Hebrew transcription, 1.5B parameters
 - `ivrit-small`: Fastest Hebrew transcription, same as ivrit-turbo
 
 ### Standard OpenAI Models

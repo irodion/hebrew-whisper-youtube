@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2025-07-27
+
+### Added
+- **Development Tooling**: Comprehensive code quality and development workflow setup
+  - Ruff for fast linting and code formatting (replaces Black, isort, flake8)
+  - Mypy for static type checking with strict configuration
+  - Pre-commit hooks for automatic code quality checks on commit
+  - Makefile with convenient development commands
+- **Code Quality Improvements**: All source code formatted and type-annotated
+  - Added type annotations throughout the codebase
+  - Fixed linting issues (imports, line length, error handling)
+  - Timezone-aware datetime handling
+  - Proper exception handling with variable assignment
+
+### Configuration
+- Updated `pyproject.toml` with development dependencies and tool configurations
+- Created `.pre-commit-config.yaml` for automated quality checks
+- Enhanced `.gitignore` with tool-specific exclusions
+
+### Developer Experience
+- `make check`: Run all quality checks (format, lint, type-check)
+- `make format`: Auto-format code with ruff
+- `make lint`: Run comprehensive linting
+- `make type-check`: Static type analysis
+- `make install-dev`: Install development dependencies
+- `make clean`: Clean up cache and build artifacts
+
 ## [0.1.0] - 2025-07-26
 
 ### Added
