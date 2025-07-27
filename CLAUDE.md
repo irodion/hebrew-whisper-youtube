@@ -65,7 +65,7 @@ The codebase implements a YouTube audio transcriber with Hebrew-optimized suppor
 
 The tool integrates ivrit-ai's Hebrew-optimized Whisper models:
 - `ivrit-turbo` (default): Fast 809M parameter model
-- `ivrit-large`: Highest quality 1.5B parameter model  
+- `ivrit-large`: Highest quality 1.5B parameter model
 - `ivrit-small`: Same as turbo, included for naming consistency
 
 These models map to HuggingFace paths in `transcriber.py:HEBREW_MODELS` dict.
