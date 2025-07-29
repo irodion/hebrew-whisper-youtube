@@ -7,7 +7,6 @@ Licensed under the MIT License - see LICENSE file for details.
 import os
 import sys
 from pathlib import Path
-from typing import Any
 
 import click
 from rich.console import Console
@@ -15,8 +14,9 @@ from rich.panel import Panel
 from rich.table import Table
 
 from .downloader import AudioDownloader
-from .metadata_formatter import MetadataFormatter
+from .playlist_processor import PlaylistProcessor
 from .transcriber import WhisperTranscriber
+from .transcript_io import save_transcript_file
 from .utils import (
     DownloadError,
     GPUError,
@@ -27,6 +27,147 @@ from .utils import (
 )
 
 console = Console()
+
+
+def validate_playlist_args(output: str, start_index: int, max_videos: int | None) -> Path:
+    """Validate and prepare playlist mode arguments.
+
+    Args:
+        output: Output directory path
+        start_index: Start video index
+        max_videos: Maximum number of videos
+
+    Returns:
+        Path: Validated output directory path
+
+    Raises:
+        SystemExit: If validation fails
+    """
+    output_path = Path(output)
+    if output_path.suffix:  # Has file extension
+        console.print(
+            "[red]Error:[/red] For playlist mode, output must be a directory path "
+            "(no file extension)"
+        )
+        sys.exit(1)
+
+    # Create output directory if it doesn't exist
+    if not output_path.exists():
+        console.print(f"[yellow]Creating directory:[/yellow] {output_path}")
+        output_path.mkdir(parents=True, exist_ok=True)
+    elif not output_path.is_dir():
+        console.print(f"[red]Error:[/red] Output path exists but is not a directory: {output_path}")
+        sys.exit(1)
+
+    # Validate start_index
+    if start_index < 1:
+        console.print("[red]Error:[/red] --start-index must be >= 1")
+        sys.exit(1)
+
+    # Validate max_videos
+    if max_videos is not None and max_videos < 1:
+        console.print("[red]Error:[/red] --max-videos must be >= 1")
+        sys.exit(1)
+
+    return output_path
+
+
+def validate_single_video_args(output: str) -> Path:
+    """Validate and prepare single video mode arguments.
+
+    Args:
+        output: Output file path
+
+    Returns:
+        Path: Validated output file path
+    """
+    output_path = Path(output)
+    output_dir = output_path.parent
+    if output_dir and not output_dir.exists():
+        console.print(f"[yellow]Creating directory:[/yellow] {output_dir}")
+        output_dir.mkdir(parents=True, exist_ok=True)
+    return output_path
+
+
+def show_configuration_table(
+    model: str,
+    language: str | None,
+    format: str,  # noqa: A002
+    device: str,
+    keep_audio: bool,
+    translate: bool,
+    playlist: bool,
+    max_videos: int | None,
+    start_index: int,
+) -> None:
+    """Display configuration table with current settings."""
+    table = Table(title="Configuration", show_header=False)
+    table.add_column("Setting", style="cyan")
+    table.add_column("Value", style="white")
+
+    cuda_available, gpu_info = check_cuda_availability()
+    device_info = gpu_info if device == "auto" and cuda_available else device
+
+    # Show model type
+    model_type = (
+        "Hebrew-optimized" if model in WhisperTranscriber.HEBREW_MODELS else "Standard OpenAI"
+    )
+    table.add_row("Model", f"{model} ({model_type})")
+    table.add_row("Language", language or "auto-detect")
+    table.add_row("Format", format)
+    table.add_row("Device", device_info or device)
+    table.add_row("Keep Audio", "Yes" if keep_audio else "No")
+    table.add_row("Translate", "Yes (Hebrew → English)" if translate else "No")
+
+    if playlist:
+        table.add_row("Mode", "Playlist")
+        table.add_row("Max Videos", str(max_videos) if max_videos else "All")
+        table.add_row("Start Index", str(start_index))
+    else:
+        table.add_row("Mode", "Single Video")
+
+    console.print(table)
+    console.print()
+
+
+def process_playlist(
+    url: str,
+    output_path: Path,
+    model: str,
+    language: str | None,
+    format: str,  # noqa: A002
+    device: str,
+    gpu_device: int,
+    keep_audio: bool,
+    translate: bool,
+    max_videos: int | None,
+    start_index: int,
+    verbose: bool,
+) -> None:
+    """Process a YouTube playlist."""
+    device_setting = None if device == "auto" else device
+    transcriber = WhisperTranscriber(model_size=model, device=device_setting, gpu_device=gpu_device)
+
+    processor = PlaylistProcessor(
+        output_dir=output_path,
+        transcriber=transcriber,
+        max_videos=max_videos,
+        start_index=start_index,
+        keep_audio=keep_audio,
+        translate=translate,
+        verbose=verbose,
+    )
+
+    try:
+        processor.process_playlist(url, language, format)
+        console.print("[bold green]All done! 🎉[/bold green]")
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Processing interrupted by user[/yellow]")
+    except (DownloadError, TranscriptionError, GPUError) as e:
+        console.print(f"[red]✗ Playlist processing failed:[/red] {e}")
+        sys.exit(1)
+    finally:
+        processor.cleanup()
 
 
 def handle_transcription_result(result: str | tuple[str, str]) -> tuple[str, str | None, bool]:
@@ -47,41 +188,6 @@ def handle_transcription_result(result: str | tuple[str, str]) -> tuple[str, str
         is_translated = False
 
     return transcript_original, transcript_translated, is_translated
-
-
-def save_transcript_file(
-    transcript: str,
-    output_path: str,
-    format: str,  # noqa: A002
-    metadata: dict[str, Any] | None = None,
-) -> None:
-    """Save transcript to file with appropriate formatting.
-
-    Args:
-        transcript: The transcript text
-        output_path: Path to save the file
-        format: Output format (text, srt, vtt, json)
-        metadata: Optional metadata for text/vtt formats
-    """
-    final_transcript = transcript
-
-    # Add metadata header for text format
-    if format == "text" and metadata:
-        header = MetadataFormatter.format_text_header(metadata)
-        final_transcript = header + transcript
-    elif format == "vtt" and metadata:
-        # For VTT, prepend metadata as comments
-        vtt_header = MetadataFormatter.format_vtt_metadata(metadata)
-        # Remove existing WEBVTT header if present and use our metadata-enhanced one
-        if transcript.startswith("WEBVTT"):
-            final_transcript = transcript[6:].lstrip("\n")
-        final_transcript = vtt_header + final_transcript
-
-    with open(output_path, "w", encoding="utf-8") as f:
-        f.write(final_transcript)
-
-    file_size = os.path.getsize(output_path) / 1024  # KB
-    console.print(f"[green]✓[/green] Saved transcript to: {output_path} ({file_size:.1f} KB)")
 
 
 @click.command()
@@ -125,6 +231,23 @@ def save_transcript_file(
     is_flag=True,
     help="Translate Hebrew transcripts to English (creates both _he and _en files)",
 )
+@click.option(
+    "--playlist",
+    is_flag=True,
+    help="Process entire YouTube playlist (output must be a directory)",
+)
+@click.option(
+    "--max-videos",
+    type=int,
+    default=None,
+    help="Maximum number of videos to process from playlist",
+)
+@click.option(
+    "--start-index",
+    type=int,
+    default=1,
+    help="Start processing from this video index (1-based)",
+)
 @click.option("-v", "--verbose", is_flag=True, help="Verbose output")
 def main(
     url: str,
@@ -136,12 +259,15 @@ def main(
     gpu_device: int,
     keep_audio: bool,
     translate: bool,
+    playlist: bool,
+    max_videos: int | None,
+    start_index: int,
     verbose: bool,
 ) -> None:
     """Download YouTube audio and transcribe it using Whisper (with Hebrew optimization).
 
-    URL: YouTube video URL
-    OUTPUT: Output file path for transcription
+    URL: YouTube video URL or playlist URL (use --playlist flag for playlists)
+    OUTPUT: Output file path for single video, or directory path for playlist
 
     Models:
     - ivrit-turbo: Hebrew-optimized, fast (recommended for Hebrew content)
@@ -165,37 +291,43 @@ def main(
             console.print("[red]Error:[/red] Invalid YouTube URL")
             sys.exit(1)
 
-        # Check output directory exists
-        output_path = Path(output)
-        output_dir = output_path.parent
-        if output_dir and not output_dir.exists():
-            console.print(f"[yellow]Creating directory:[/yellow] {output_dir}")
-            output_dir.mkdir(parents=True, exist_ok=True)
+        # Validate playlist vs single video mode
+        if playlist:
+            output_path = validate_playlist_args(output, start_index, max_videos)
+        else:
+            output_path = validate_single_video_args(output)
 
         # Show configuration
         if verbose:
-            table = Table(title="Configuration", show_header=False)
-            table.add_column("Setting", style="cyan")
-            table.add_column("Value", style="white")
-
-            cuda_available, gpu_info = check_cuda_availability()
-            device_info = gpu_info if device == "auto" and cuda_available else device
-
-            # Show model type
-            model_type = (
-                "Hebrew-optimized"
-                if model in WhisperTranscriber.get_hebrew_models()
-                else "Standard OpenAI"
+            show_configuration_table(
+                model,
+                language,
+                format,
+                device,
+                keep_audio,
+                translate,
+                playlist,
+                max_videos,
+                start_index,
             )
-            table.add_row("Model", f"{model} ({model_type})")
-            table.add_row("Language", language or "auto-detect")
-            table.add_row("Format", format)
-            table.add_row("Device", device_info or device)
-            table.add_row("Keep Audio", "Yes" if keep_audio else "No")
-            table.add_row("Translate", "Yes (Hebrew → English)" if translate else "No")
 
-            console.print(table)
-            console.print()
+        # Handle playlist processing
+        if playlist:
+            process_playlist(
+                url,
+                output_path,
+                model,
+                language,
+                format,
+                device,
+                gpu_device,
+                keep_audio,
+                translate,
+                max_videos,
+                start_index,
+                verbose,
+            )
+            return
 
         # Step 1: Download audio
         console.rule("[bold]Step 1/3: Downloading Audio[/bold]")
