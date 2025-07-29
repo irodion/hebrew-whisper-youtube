@@ -5,6 +5,7 @@ Licensed under the MIT License - see LICENSE file for details.
 """
 
 import shutil
+from pathlib import Path
 from urllib.parse import urlparse
 
 import torch
@@ -23,6 +24,10 @@ class DownloadError(TranscriptionError):
 
 class GPUError(TranscriptionError):
     """Error with GPU/CUDA setup."""
+
+
+class TranslationError(TranscriptionError):
+    """Error during translation."""
 
 
 def check_cuda_availability() -> tuple[bool, str | None]:
@@ -79,3 +84,23 @@ def validate_url(url: str) -> bool:
         return host in {"www.youtube.com", "youtube.com", "youtu.be"} and bool(parsed.path)
     except (ValueError, AttributeError):
         return False
+
+
+def get_language_filename(base_path: str, language_code: str) -> str:
+    """Generate filename with language suffix.
+
+    Args:
+        base_path: Original file path (e.g., 'output.srt')
+        language_code: Language code to append (e.g., 'he', 'en')
+
+    Returns:
+        Path with language suffix (e.g., 'output_he.srt')
+    """
+    path = Path(base_path)
+    stem = path.stem
+    suffix = path.suffix
+    parent = path.parent
+
+    # Add language code before extension
+    new_name = f"{stem}_{language_code}{suffix}"
+    return str(parent / new_name)

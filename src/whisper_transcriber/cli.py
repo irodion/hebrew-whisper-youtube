@@ -7,6 +7,7 @@ Licensed under the MIT License - see LICENSE file for details.
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 import click
 from rich.console import Console
@@ -21,10 +22,66 @@ from .utils import (
     GPUError,
     TranscriptionError,
     check_cuda_availability,
+    get_language_filename,
     validate_url,
 )
 
 console = Console()
+
+
+def handle_transcription_result(result: str | tuple[str, str]) -> tuple[str, str | None, bool]:
+    """Handle transcription result, returning tuple of (original, translated, is_translated).
+
+    Args:
+        result: Either transcript string or tuple of (original, translated)
+
+    Returns:
+        tuple: (transcript_original, transcript_translated, is_translated)
+    """
+    if isinstance(result, tuple):
+        transcript_original, transcript_translated = result
+        is_translated = True
+    else:
+        transcript_original = result
+        transcript_translated = None
+        is_translated = False
+
+    return transcript_original, transcript_translated, is_translated
+
+
+def save_transcript_file(
+    transcript: str,
+    output_path: str,
+    format: str,  # noqa: A002
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    """Save transcript to file with appropriate formatting.
+
+    Args:
+        transcript: The transcript text
+        output_path: Path to save the file
+        format: Output format (text, srt, vtt, json)
+        metadata: Optional metadata for text/vtt formats
+    """
+    final_transcript = transcript
+
+    # Add metadata header for text format
+    if format == "text" and metadata:
+        header = MetadataFormatter.format_text_header(metadata)
+        final_transcript = header + transcript
+    elif format == "vtt" and metadata:
+        # For VTT, prepend metadata as comments
+        vtt_header = MetadataFormatter.format_vtt_metadata(metadata)
+        # Remove existing WEBVTT header if present and use our metadata-enhanced one
+        if transcript.startswith("WEBVTT"):
+            final_transcript = transcript[6:].lstrip("\n")
+        final_transcript = vtt_header + final_transcript
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(final_transcript)
+
+    file_size = os.path.getsize(output_path) / 1024  # KB
+    console.print(f"[green]✓[/green] Saved transcript to: {output_path} ({file_size:.1f} KB)")
 
 
 @click.command()
@@ -56,7 +113,18 @@ console = Console()
     default="auto",
     help="Device to use for transcription",
 )
+@click.option(
+    "--gpu-device",
+    type=int,
+    default=0,
+    help="GPU device ID to use for translation (default: 0)",
+)
 @click.option("--keep-audio", is_flag=True, help="Keep the downloaded audio file")
+@click.option(
+    "--translate",
+    is_flag=True,
+    help="Translate Hebrew transcripts to English (creates both _he and _en files)",
+)
 @click.option("-v", "--verbose", is_flag=True, help="Verbose output")
 def main(
     url: str,
@@ -65,7 +133,9 @@ def main(
     language: str | None,
     format: str,  # noqa: A002
     device: str,
+    gpu_device: int,
     keep_audio: bool,
+    translate: bool,
     verbose: bool,
 ) -> None:
     """Download YouTube audio and transcribe it using Whisper (with Hebrew optimization).
@@ -122,6 +192,7 @@ def main(
             table.add_row("Format", format)
             table.add_row("Device", device_info or device)
             table.add_row("Keep Audio", "Yes" if keep_audio else "No")
+            table.add_row("Translate", "Yes (Hebrew → English)" if translate else "No")
 
             console.print(table)
             console.print()
@@ -142,16 +213,31 @@ def main(
         console.rule("[bold]Step 2/3: Transcribing Audio[/bold]")
 
         device_setting = None if device == "auto" else device
-        transcriber = WhisperTranscriber(model_size=model, device=device_setting)
+        transcriber = WhisperTranscriber(
+            model_size=model, device=device_setting, gpu_device=gpu_device
+        )
 
         try:
-            transcript = transcriber.transcribe(
-                audio_path, language=language, output_format=format, metadata=metadata
+            result = transcriber.transcribe(
+                audio_path,
+                language=language,
+                output_format=format,
+                metadata=metadata,
+                translate_to_english=translate,
+            )
+
+            # Handle translation results
+            transcript_original, transcript_translated, is_translated = handle_transcription_result(
+                result
             )
 
             # Show preview of transcript
             if verbose and format == "text":
-                preview = transcript[:500] + "..." if len(transcript) > 500 else transcript
+                preview = (
+                    transcript_original[:500] + "..."
+                    if len(transcript_original) > 500
+                    else transcript_original
+                )
                 console.print(Panel(preview, title="Transcript Preview", border_style="green"))
 
         except GPUError as e:
@@ -159,31 +245,37 @@ def main(
             console.print("[yellow]Retrying with CPU...[/yellow]")
 
             # Retry with CPU
-            transcriber = WhisperTranscriber(model_size=model, device="cpu")
-            transcript = transcriber.transcribe(
-                audio_path, language=language, output_format=format, metadata=metadata
+            transcriber = WhisperTranscriber(model_size=model, device="cpu", gpu_device=gpu_device)
+            result = transcriber.transcribe(
+                audio_path,
+                language=language,
+                output_format=format,
+                metadata=metadata,
+                translate_to_english=translate,
             )
 
-        # Step 3: Save transcript
-        console.rule("[bold]Step 3/3: Saving Transcript[/bold]")
+            # Handle translation results
+            transcript_original, transcript_translated, is_translated = handle_transcription_result(
+                result
+            )
 
-        # Add metadata header for text format
-        if format == "text":
-            header = MetadataFormatter.format_text_header(metadata)
-            transcript = header + transcript
-        elif format == "vtt":
-            # For VTT, prepend metadata as comments
-            vtt_header = MetadataFormatter.format_vtt_metadata(metadata)
-            # Remove existing WEBVTT header if present and use our metadata-enhanced one
-            if transcript.startswith("WEBVTT"):
-                transcript = transcript[6:].lstrip("\n")
-            transcript = vtt_header + transcript
+        # Step 3: Save transcript(s)
+        console.rule("[bold]Step 3/3: Saving Transcript(s)[/bold]")
 
-        with open(output_path, "w", encoding="utf-8") as f:
-            f.write(transcript)
+        if is_translated:
+            # Save both Hebrew and English versions
+            output_he = get_language_filename(output, "he")
+            output_en = get_language_filename(output, "en")
 
-        file_size = os.path.getsize(output_path) / 1024  # KB
-        console.print(f"[green]✓[/green] Saved transcript to: {output_path} ({file_size:.1f} KB)")
+            # Save Hebrew version
+            save_transcript_file(transcript_original, output_he, format, metadata)
+
+            # Save English version
+            assert transcript_translated is not None  # Type checker
+            save_transcript_file(transcript_translated, output_en, format, metadata)
+        else:
+            # Save single transcript
+            save_transcript_file(transcript_original, str(output_path), format, metadata)
 
         # Cleanup
         if not keep_audio:
