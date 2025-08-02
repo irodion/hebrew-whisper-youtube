@@ -146,6 +146,8 @@ def process_playlist(
     max_videos: int | None,
     start_index: int,
     verbose: bool,
+    translation_context: bool = True,
+    context_lines: int = 2,
     transcriber: WhisperTranscriber | None = None,
 ) -> None:
     """Process a YouTube playlist."""
@@ -165,6 +167,8 @@ def process_playlist(
         keep_audio=keep_audio,
         translate=translate,
         verbose=verbose,
+        translation_context=translation_context,
+        context_lines=context_lines,
     )
 
     try:
@@ -232,6 +236,8 @@ def _transcribe_audio_with_retry(
     metadata: dict[str, Any],
     translate: bool,
     verbose: bool,
+    translation_context: bool = True,
+    context_lines: int = 2,
 ) -> tuple[str, str | None, bool]:
     """Transcribe audio with GPU fallback to CPU.
 
@@ -245,6 +251,8 @@ def _transcribe_audio_with_retry(
         metadata: Video metadata
         translate: Whether to translate
         verbose: Whether to show verbose output
+        translation_context: Whether to use translation context
+        context_lines: Number of context lines to use
 
     Returns:
         tuple: (transcript_original, transcript_translated, is_translated)
@@ -264,6 +272,8 @@ def _transcribe_audio_with_retry(
             output_format=format,
             metadata=metadata,
             translate_to_english=translate,
+            use_translation_context=translation_context,
+            context_lines=context_lines,
         )
 
         # Handle translation results
@@ -299,13 +309,25 @@ def _transcribe_audio_with_retry(
             output_format=format,
             metadata=metadata,
             translate_to_english=translate,
+            use_translation_context=translation_context,
+            context_lines=context_lines,
         )
 
         # Handle translation results
         return handle_transcription_result(result)
 
 
-@click.command()
+@click.option(
+    "--translation-context/--no-translation-context",
+    default=True,
+    help="Include previous translations as context for consistency (default: enabled)",
+)
+@click.option(
+    "--context-lines",
+    type=int,
+    default=2,
+    help="Number of previous translated lines to include as context (0-5, default: 2)",
+)
 @click.argument("url")
 @click.argument("output", type=click.Path())
 @click.option(
@@ -363,7 +385,118 @@ def _transcribe_audio_with_retry(
     default=1,
     help="Start processing from this video index (1-based)",
 )
+def _validate_inputs(url: str, context_lines: int) -> None:
+    """Validate input parameters."""
+    if not validate_url(url):
+        console.print("[red]Error:[/red] Invalid YouTube URL")
+        sys.exit(1)
+
+    if context_lines < 0 or context_lines > 5:
+        console.print("[red]Error:[/red] Context lines must be between 0 and 5")
+        sys.exit(1)
+
+
+def _handle_playlist_processing(
+    url: str,
+    output_path: Path,
+    model: str,
+    language: str | None,
+    output_format: str,
+    device: str,
+    gpu_device: int,
+    keep_audio: bool,
+    translate: bool,
+    max_videos: int | None,
+    start_index: int,
+    verbose: bool,
+    translation_context: bool,
+    context_lines: int,
+    model_manager: Any,
+    device_setting: str | None,
+) -> None:
+    """Handle playlist processing workflow."""
+    # Pre-load transcriber for playlist processing
+    transcriber = model_manager.get_transcriber(
+        model_size=model, device=device_setting, gpu_device=gpu_device
+    )
+
+    process_playlist(
+        url,
+        output_path,
+        model,
+        language,
+        output_format,
+        device,
+        gpu_device,
+        keep_audio,
+        translate,
+        max_videos,
+        start_index,
+        verbose,
+        translation_context,
+        context_lines,
+        transcriber=transcriber,
+    )
+
+
+def _handle_single_video_processing(
+    url: str,
+    output_path: Path,
+    model: str,
+    device_setting: str | None,
+    gpu_device: int,
+    language: str | None,
+    output_format: str,
+    translate: bool,
+    verbose: bool,
+    translation_context: bool,
+    context_lines: int,
+    keep_audio: bool,
+) -> None:
+    """Handle single video processing workflow."""
+    # Download audio
+    audio_path, metadata, downloader = _download_audio(url, keep_audio)
+
+    # Transcribe audio with retry
+    transcript_original, transcript_translated, is_translated = _transcribe_audio_with_retry(
+        audio_path,
+        model,
+        device_setting,
+        gpu_device,
+        language,
+        output_format,
+        metadata,
+        translate,
+        verbose,
+        translation_context,
+        context_lines,
+    )
+
+    # Step 3: Save transcript(s)
+    console.rule("[bold]Step 3/3: Saving Transcript(s)[/bold]")
+
+    if is_translated:
+        # Save both Hebrew and English versions
+        output_he = get_language_filename(str(output_path), "he")
+        output_en = get_language_filename(str(output_path), "en")
+
+        # Save Hebrew version
+        save_transcript_file(transcript_original, output_he, output_format, metadata)
+
+        # Save English version
+        assert transcript_translated is not None  # Type checker
+        save_transcript_file(transcript_translated, output_en, output_format, metadata)
+    else:
+        # Save single transcript
+        save_transcript_file(transcript_original, str(output_path), output_format, metadata)
+
+    # Cleanup
+    if not keep_audio:
+        downloader.cleanup()
+
+
 @click.option("-v", "--verbose", is_flag=True, help="Verbose output")
+@click.command()
 def main(
     url: str,
     output: str,
@@ -378,6 +511,8 @@ def main(
     max_videos: int | None,
     start_index: int,
     verbose: bool,
+    translation_context: bool,
+    context_lines: int,
 ) -> None:
     """Download YouTube audio and transcribe it using Whisper (with Hebrew optimization).
 
@@ -402,10 +537,8 @@ def main(
             )
         )
 
-        # Validate URL
-        if not validate_url(url):
-            console.print("[red]Error:[/red] Invalid YouTube URL")
-            sys.exit(1)
+        # Validate inputs
+        _validate_inputs(url, context_lines)
 
         # Validate playlist vs single video mode
         if playlist:
@@ -431,14 +564,9 @@ def main(
         model_manager = get_model_manager()
         device_setting = None if device == "auto" else device
 
-        # Handle playlist processing
+        # Handle playlist or single video processing
         if playlist:
-            # Pre-load transcriber for playlist processing
-            transcriber = model_manager.get_transcriber(
-                model_size=model, device=device_setting, gpu_device=gpu_device
-            )
-
-            process_playlist(
+            _handle_playlist_processing(
                 url,
                 output_path,
                 model,
@@ -451,47 +579,26 @@ def main(
                 max_videos,
                 start_index,
                 verbose,
-                transcriber=transcriber,
+                translation_context,
+                context_lines,
+                model_manager,
+                device_setting,
             )
-            return
-
-        # Download audio
-        audio_path, metadata, downloader = _download_audio(url, keep_audio)
-
-        # Transcribe audio with retry
-        transcript_original, transcript_translated, is_translated = _transcribe_audio_with_retry(
-            audio_path,
-            model,
-            device_setting,
-            gpu_device,
-            language,
-            format,
-            metadata,
-            translate,
-            verbose,
-        )
-
-        # Step 3: Save transcript(s)
-        console.rule("[bold]Step 3/3: Saving Transcript(s)[/bold]")
-
-        if is_translated:
-            # Save both Hebrew and English versions
-            output_he = get_language_filename(output, "he")
-            output_en = get_language_filename(output, "en")
-
-            # Save Hebrew version
-            save_transcript_file(transcript_original, output_he, format, metadata)
-
-            # Save English version
-            assert transcript_translated is not None  # Type checker
-            save_transcript_file(transcript_translated, output_en, format, metadata)
         else:
-            # Save single transcript
-            save_transcript_file(transcript_original, str(output_path), format, metadata)
-
-        # Cleanup
-        if not keep_audio:
-            downloader.cleanup()
+            _handle_single_video_processing(
+                url,
+                output_path,
+                model,
+                device_setting,
+                gpu_device,
+                language,
+                format,
+                translate,
+                verbose,
+                translation_context,
+                context_lines,
+                keep_audio,
+            )
 
         console.print("\n[bold green]✓ Transcription completed successfully![/bold green]")
 

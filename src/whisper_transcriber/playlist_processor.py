@@ -53,6 +53,8 @@ class PlaylistProcessor:
         translate: bool = False,
         verbose: bool = False,
         download_workers: int | None = None,
+        translation_context: bool = True,
+        context_lines: int = 2,
     ) -> None:
         """Initialize the playlist processor.
 
@@ -65,6 +67,8 @@ class PlaylistProcessor:
             translate: Whether to translate transcripts
             verbose: Whether to show verbose output
             download_workers: Number of concurrent download workers (default: 3)
+            translation_context: Whether to use translation context
+            context_lines: Number of context lines to use
         """
         self.output_dir = output_dir
         self.transcriber = transcriber
@@ -74,6 +78,8 @@ class PlaylistProcessor:
         self.translate = translate
         self.verbose = verbose
         self.download_workers = download_workers or self.DEFAULT_DOWNLOAD_WORKERS
+        self.translation_context = translation_context
+        self.context_lines = context_lines
 
         # Concurrent processing components
         self.download_queue: queue.Queue[Any] = queue.Queue(maxsize=self.DOWNLOAD_QUEUE_SIZE)
@@ -169,6 +175,7 @@ class PlaylistProcessor:
                         "url": video_url,
                         "output_path": output_path,
                         "video_info": video_info,
+                        "playlist_title": playlist_title,
                     }
                 )
 
@@ -361,6 +368,7 @@ class PlaylistProcessor:
                             task_copy["video_info"],
                             task_copy["index"],
                             task_copy["title"],
+                            task_copy.get("playlist_title"),
                         )
                         results.append(result)
 
@@ -416,6 +424,7 @@ class PlaylistProcessor:
         video_info: dict[str, Any],
         index: int,
         title: str,
+        playlist_title: str | None = None,
     ) -> dict[str, Any]:
         """Transcribe a single video (sequential execution for GPU efficiency).
 
@@ -428,6 +437,7 @@ class PlaylistProcessor:
             video_info: Video information
             index: Video index
             title: Video title
+            playlist_title: Optional playlist title for context
 
         Returns:
             Result dictionary with success status
@@ -439,6 +449,10 @@ class PlaylistProcessor:
             # Merge video info into metadata
             metadata.update(video_info)
 
+            # Add playlist title to metadata for translation context
+            if playlist_title:
+                metadata["playlist_title"] = playlist_title
+
             # Transcribe
             result = self.transcriber.transcribe(
                 audio_path,
@@ -446,6 +460,8 @@ class PlaylistProcessor:
                 output_format=output_format,
                 metadata=metadata,
                 translate_to_english=self.translate,
+                use_translation_context=self.translation_context,
+                context_lines=self.context_lines,
             )
 
             # Handle translation results
@@ -485,6 +501,7 @@ class PlaylistProcessor:
         language: str | None,
         output_format: str,
         video_info: dict[str, Any],
+        playlist_title: str | None = None,
     ) -> None:
         """Process a single video from the playlist."""
         # Download audio
@@ -498,6 +515,10 @@ class PlaylistProcessor:
         # Merge video info into metadata
         metadata.update(video_info)
 
+        # Add playlist title to metadata for translation context
+        if playlist_title:
+            metadata["playlist_title"] = playlist_title
+
         # Transcribe
         try:
             result = self.transcriber.transcribe(
@@ -506,6 +527,8 @@ class PlaylistProcessor:
                 output_format=output_format,
                 metadata=metadata,
                 translate_to_english=self.translate,
+                use_translation_context=self.translation_context,
+                context_lines=self.context_lines,
             )
 
             # Handle translation results

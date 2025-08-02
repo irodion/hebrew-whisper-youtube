@@ -5,7 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] - 2025-07-27
+## [Unreleased] - 2025-08-02
+
+### Added
+- **Enhanced Translation System**: Major improvements to Hebrew-to-English translation accuracy
+  - Context-aware translation with video metadata integration
+  - Professional role-playing prompts to prevent conversational responses
+  - Playlist title integration for topic consistency across videos
+  - Video title and channel context for domain-specific terminology
+  - **Translation Context Continuity**: Previous translation context for consistent terminology
+    - New CLI options: `--translation-context/--no-translation-context` (default: enabled)
+    - New CLI option: `--context-lines` (0-5, default: 2) to control context window size
+    - Sliding window of 2-3 recent translations maintains consistency within videos
+    - Smart context truncation prevents token overflow
+  - Robust fallback mechanisms for translation failures
+
+### Improved
+- **Translation Quality**: Significantly reduced context drift and improved accuracy
+  - Enhanced prompts with clear instructions to avoid treating subtitles as questions
+  - Video/playlist context prevents off-topic translations
+  - Better domain awareness leads to more appropriate word choices
+  - **Enhanced Terminology Consistency**: Previous translations provide context for consistent word choices
+  - **Style Continuity**: Maintains formal/informal tone established in earlier subtitle segments
+  - Better coherence across video segments through translation memory
+
+### Technical Changes
+- **Translator Module**: Added `translate_with_context()` method with metadata and previous translations support
+- **Translation Context Tracking**: Enhanced `translate_segments()` to maintain sliding window of previous translations
+- **CLI Enhancements**: New command-line options for controlling translation context behavior
+- **Transcriber Integration**: Modified `_perform_translation()` to pass context settings throughout pipeline
+- **Playlist Processors**: Updated both sequential and concurrent processors to support context continuity
+- **Pipeline Integration**: Complete context flow from CLI → transcriber → playlist processors → translator
+- **Metadata Flow**: Enhanced pipeline from extraction to translation with context awareness
+
+## [0.1.1] - 2025-07-27
 
 ### Added
 - **Development Tooling**: Comprehensive code quality and development workflow setup
