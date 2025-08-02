@@ -70,7 +70,7 @@ class DictaLMTranslator:
             self.model.eval()  # Set to evaluation mode
             console.print("[green]✓[/green] Translation model loaded successfully")
 
-        except Exception as e:
+        except (RuntimeError, torch.cuda.OutOfMemoryError, ValueError, OSError, ImportError) as e:
             error_msg = str(e).lower()
             # Check for GPU/CUDA related errors
             if any(
@@ -104,7 +104,7 @@ class DictaLMTranslator:
                             "[green]✓[/green] Successfully loaded translation model on CPU"
                         )
                         return
-                    except Exception as cpu_error:
+                    except (RuntimeError, OSError, ValueError, ImportError) as cpu_error:
                         gpu_cpu_error_msg = (
                             f"Both GPU and CPU initialization failed. GPU: {e!s}, "
                             f"CPU: {cpu_error!s}"
@@ -117,11 +117,12 @@ class DictaLMTranslator:
                 error_msg = f"Failed to load translation model: {e!s}"
                 raise TranslationError(error_msg) from e
 
-    def translate_text(self, text: str) -> str:
-        """Translate a single text from Hebrew to English.
+    def translate_text(self, text: str, max_retries: int = 2) -> str:
+        """Translate a single text from Hebrew to English with retry logic.
 
         Args:
             text: Hebrew text to translate
+            max_retries: Maximum number of retry attempts (default: 2)
 
         Returns:
             English translation
@@ -139,42 +140,62 @@ class DictaLMTranslator:
             f"translation:\n{text.strip()} [/INST]"
         )
 
-        try:
-            # Tokenize input
-            inputs = self.tokenizer(prompt, return_tensors="pt")
-            # Move to device
-            inputs = {k: v.to(self.device) for k, v in inputs.items()}
+        for attempt in range(max_retries + 1):
+            try:
+                # Tokenize input
+                inputs = self.tokenizer(prompt, return_tensors="pt")
+                # Move to device
+                inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
-            # Generate translation
-            with torch.no_grad():
-                outputs = self.model.generate(
-                    **inputs,
-                    max_new_tokens=100,  # Sufficient for subtitle lines
-                    do_sample=False,  # Deterministic output
-                    temperature=1.0,
-                    pad_token_id=self.tokenizer.eos_token_id,
-                )
+                # Generate translation
+                with torch.no_grad():
+                    outputs = self.model.generate(
+                        **inputs,
+                        max_new_tokens=100,  # Sufficient for subtitle lines
+                        do_sample=False,  # Deterministic output
+                        temperature=1.0,
+                        pad_token_id=self.tokenizer.eos_token_id,
+                    )
 
-            # Decode output
-            decoded = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+                # Decode output
+                decoded = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
 
-            # Extract just the translation (remove prompt echo if present)
-            if "[/INST]" in decoded:
-                translation = decoded.split("[/INST]", 1)[1].strip()
-            else:
-                translation = decoded.strip()
+                # Extract just the translation (remove prompt echo if present)
+                if "[/INST]" in decoded:
+                    translation = decoded.split("[/INST]", 1)[1].strip()
+                else:
+                    translation = decoded.strip()
 
-            return str(translation)
+                return str(translation)
 
-        except (RuntimeError, torch.cuda.OutOfMemoryError) as e:
-            console.print(f"[red]⚠ Translation failed for text: '{text[:50]}...'[/red]")
-            console.print(f"[red]Error: {e!s}[/red]")
-            console.print(
-                "[yellow]⚠ WARNING: Returning original Hebrew text "
-                "instead of English translation[/yellow]"
-            )
-            # Return original text as fallback with clear indication this is not translated
-            return f"[UNTRANSLATED] {text}"
+            except (RuntimeError, torch.cuda.OutOfMemoryError) as e:
+                if attempt < max_retries:
+                    # Clear GPU cache and retry
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    console.print(
+                        f"[yellow]Translation attempt {attempt + 1} failed, retrying...[/yellow]"
+                    )
+                    # Small delay before retry
+                    import time
+
+                    time.sleep(0.5)
+                else:
+                    # Final attempt failed
+                    console.print(
+                        f"[red]⚠ Translation failed after {max_retries + 1} attempts "
+                        f"for text: '{text[:50]}...'[/red]"
+                    )
+                    console.print(f"[red]Error: {e!s}[/red]")
+                    console.print(
+                        "[yellow]⚠ WARNING: Returning original Hebrew text "
+                        "instead of English translation[/yellow]"
+                    )
+                    # Return original text as fallback with clear indication this is not translated
+                    return f"[UNTRANSLATED] {text}"
+
+        # Should never reach here, but add return for type checker
+        return f"[UNTRANSLATED] {text}"
 
     def translate_segments(self, segments: list[Any]) -> list[dict[str, Any]]:
         """Translate a list of transcription segments from Hebrew to English.
