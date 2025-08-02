@@ -8,10 +8,11 @@ import json
 import os
 from typing import Any, ClassVar
 
+import torch
 from faster_whisper import WhisperModel
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
-from .translator import DictaLMTranslator
+from .resource_manager import managed_gpu_memory
 from .utils import GPUError, TranslationError, check_cuda_availability, console
 
 
@@ -109,7 +110,7 @@ class WhisperTranscriber:
             if self.is_hebrew_model:
                 console.print("[green]✓[/green] Hebrew-optimized model loaded successfully")
 
-        except Exception as e:
+        except (RuntimeError, torch.cuda.OutOfMemoryError, ValueError, OSError) as e:
             error_msg = str(e).lower()
             # Check for GPU/CUDA related errors
             if any(
@@ -133,7 +134,7 @@ class WhisperTranscriber:
                         )
                         console.print("[green]✓[/green] Successfully loaded model on CPU")
                         return
-                    except Exception as cpu_error:
+                    except (RuntimeError, OSError, ValueError) as cpu_error:
                         gpu_cpu_error_msg = (
                             f"Both GPU and CPU initialization failed. GPU: {e!s}, "
                             f"CPU: {cpu_error!s}"
@@ -298,32 +299,40 @@ class WhisperTranscriber:
     ) -> str | None:
         """Perform translation and return formatted translated output."""
         console.rule("[bold]Step 2.5/3: Translating to English[/bold]")
-        translator = DictaLMTranslator(gpu_device=self.gpu_device)
 
-        try:
-            # Translate segments
-            translated_segments = translator.translate_segments(segments_list)
+        # Use GPU memory management context
+        with managed_gpu_memory():
+            # Get translator from model manager for efficiency
+            from .model_manager import get_model_manager
 
-            # Format translated output
-            if output_format == "text":
-                translated = self._format_as_text(translated_segments)
-            elif output_format == "srt":
-                translated = self._format_as_srt(translated_segments)
-            elif output_format == "vtt":
-                translated = self._format_as_vtt(translated_segments)
-            elif output_format == "json":
-                translated = self._format_as_json(translated_segments, metadata or {}, info)
-            else:
-                return None  # Should not happen due to earlier validation
+            model_manager = get_model_manager()
 
-            # Clean up translator
-            translator.cleanup()
-            return translated
+            try:
+                translator = model_manager.get_translator(
+                    device=self.device, gpu_device=self.gpu_device
+                )
 
-        except (GPUError, TranslationError) as e:
-            console.print(f"[yellow]⚠ Translation failed:[/yellow] {e!s}")
-            console.print("[yellow]Continuing with Hebrew transcript only[/yellow]")
-            return None
+                # Translate segments
+                translated_segments = translator.translate_segments(segments_list)
+
+                # Format translated output
+                if output_format == "text":
+                    translated = self._format_as_text(translated_segments)
+                elif output_format == "srt":
+                    translated = self._format_as_srt(translated_segments)
+                elif output_format == "vtt":
+                    translated = self._format_as_vtt(translated_segments)
+                elif output_format == "json":
+                    translated = self._format_as_json(translated_segments, metadata or {}, info)
+                else:
+                    return None  # Should not happen due to earlier validation
+
+                return translated
+
+            except (GPUError, TranslationError) as e:
+                console.print(f"[yellow]⚠ Translation failed:[/yellow] {e!s}")
+                console.print("[yellow]Continuing with Hebrew transcript only[/yellow]")
+                return None
 
     def _normalize_segment(self, segment: Any) -> dict[str, Any]:
         """Convert segment object or dictionary into consistent dictionary format.

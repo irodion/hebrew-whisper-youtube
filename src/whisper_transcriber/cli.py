@@ -7,6 +7,7 @@ Licensed under the MIT License - see LICENSE file for details.
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 import click
 from rich.console import Console
@@ -14,6 +15,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from .downloader import AudioDownloader
+from .model_manager import get_model_manager
 from .playlist_processor import PlaylistProcessor
 from .transcriber import WhisperTranscriber
 from .transcript_io import save_transcript_file
@@ -143,10 +145,16 @@ def process_playlist(
     max_videos: int | None,
     start_index: int,
     verbose: bool,
+    transcriber: WhisperTranscriber | None = None,
 ) -> None:
     """Process a YouTube playlist."""
-    device_setting = None if device == "auto" else device
-    transcriber = WhisperTranscriber(model_size=model, device=device_setting, gpu_device=gpu_device)
+    # Use provided transcriber or get from model manager
+    if transcriber is None:
+        device_setting = None if device == "auto" else device
+        model_manager = get_model_manager()
+        transcriber = model_manager.get_transcriber(
+            model_size=model, device=device_setting, gpu_device=gpu_device
+        )
 
     processor = PlaylistProcessor(
         output_dir=output_path,
@@ -188,6 +196,112 @@ def handle_transcription_result(result: str | tuple[str, str]) -> tuple[str, str
         is_translated = False
 
     return transcript_original, transcript_translated, is_translated
+
+
+def _download_audio(url: str, keep_audio: bool) -> tuple[str, dict[str, Any], AudioDownloader]:
+    """Download audio from YouTube URL.
+
+    Args:
+        url: YouTube video URL
+        keep_audio: Whether to keep the downloaded audio file
+
+    Returns:
+        tuple: (audio_path, metadata, downloader)
+    """
+    console.rule("[bold]Step 1/3: Downloading Audio[/bold]")
+    downloader = AudioDownloader()
+
+    try:
+        audio_path, metadata = downloader.download(url, keep_audio=keep_audio)
+        audio_size = os.path.getsize(audio_path) / (1024 * 1024)  # MB
+        console.print(f"[green]✓[/green] Downloaded audio: {audio_size:.1f} MB")
+        return audio_path, metadata, downloader
+    except DownloadError as e:
+        console.print(f"[red]✗ Download failed:[/red] {e}")
+        sys.exit(1)
+
+
+def _transcribe_audio_with_retry(
+    audio_path: str,
+    model: str,
+    device_setting: str | None,
+    gpu_device: int,
+    language: str | None,
+    format: str,  # noqa: A002
+    metadata: dict[str, Any],
+    translate: bool,
+    verbose: bool,
+) -> tuple[str, str | None, bool]:
+    """Transcribe audio with GPU fallback to CPU.
+
+    Args:
+        audio_path: Path to audio file
+        model: Model name
+        device_setting: Device setting (None for auto)
+        gpu_device: GPU device ID
+        language: Language code
+        format: Output format
+        metadata: Video metadata
+        translate: Whether to translate
+        verbose: Whether to show verbose output
+
+    Returns:
+        tuple: (transcript_original, transcript_translated, is_translated)
+    """
+    console.rule("[bold]Step 2/3: Transcribing Audio[/bold]")
+
+    # Get model manager and transcriber
+    model_manager = get_model_manager()
+    transcriber = model_manager.get_transcriber(
+        model_size=model, device=device_setting, gpu_device=gpu_device
+    )
+
+    try:
+        result = transcriber.transcribe(
+            audio_path,
+            language=language,
+            output_format=format,
+            metadata=metadata,
+            translate_to_english=translate,
+        )
+
+        # Handle translation results
+        transcript_original, transcript_translated, is_translated = handle_transcription_result(
+            result
+        )
+
+        # Show preview of transcript
+        if verbose and format == "text":
+            preview = (
+                transcript_original[:500] + "..."
+                if len(transcript_original) > 500
+                else transcript_original
+            )
+            console.print(Panel(preview, title="Transcript Preview", border_style="green"))
+
+        return transcript_original, transcript_translated, is_translated
+
+    except GPUError as e:
+        console.print(f"[red]✗ GPU Error:[/red] {e}")
+        console.print("[yellow]Retrying with CPU...[/yellow]")
+
+        # Retry with CPU using model manager
+        transcriber = model_manager.get_transcriber(
+            model_size=model,
+            device="cpu",
+            gpu_device=gpu_device,
+            force_reload=True,  # Force reload to get CPU version
+        )
+        result = transcriber.transcribe(
+            audio_path,
+            language=language,
+            output_format=format,
+            metadata=metadata,
+            translate_to_english=translate,
+        )
+
+        # Handle translation results
+        return handle_transcription_result(result)
 
 
 @click.command()
@@ -311,8 +425,17 @@ def main(
                 start_index,
             )
 
+        # Get model manager for persistent models
+        model_manager = get_model_manager()
+        device_setting = None if device == "auto" else device
+
         # Handle playlist processing
         if playlist:
+            # Pre-load transcriber for playlist processing
+            transcriber = model_manager.get_transcriber(
+                model_size=model, device=device_setting, gpu_device=gpu_device
+            )
+
             process_playlist(
                 url,
                 output_path,
@@ -326,70 +449,25 @@ def main(
                 max_videos,
                 start_index,
                 verbose,
+                transcriber=transcriber,
             )
             return
 
-        # Step 1: Download audio
-        console.rule("[bold]Step 1/3: Downloading Audio[/bold]")
-        downloader = AudioDownloader()
+        # Download audio
+        audio_path, metadata, downloader = _download_audio(url, keep_audio)
 
-        try:
-            audio_path, metadata = downloader.download(url, keep_audio=keep_audio)
-            audio_size = os.path.getsize(audio_path) / (1024 * 1024)  # MB
-            console.print(f"[green]✓[/green] Downloaded audio: {audio_size:.1f} MB")
-        except DownloadError as e:
-            console.print(f"[red]✗ Download failed:[/red] {e}")
-            sys.exit(1)
-
-        # Step 2: Transcribe audio
-        console.rule("[bold]Step 2/3: Transcribing Audio[/bold]")
-
-        device_setting = None if device == "auto" else device
-        transcriber = WhisperTranscriber(
-            model_size=model, device=device_setting, gpu_device=gpu_device
+        # Transcribe audio with retry
+        transcript_original, transcript_translated, is_translated = _transcribe_audio_with_retry(
+            audio_path,
+            model,
+            device_setting,
+            gpu_device,
+            language,
+            format,
+            metadata,
+            translate,
+            verbose,
         )
-
-        try:
-            result = transcriber.transcribe(
-                audio_path,
-                language=language,
-                output_format=format,
-                metadata=metadata,
-                translate_to_english=translate,
-            )
-
-            # Handle translation results
-            transcript_original, transcript_translated, is_translated = handle_transcription_result(
-                result
-            )
-
-            # Show preview of transcript
-            if verbose and format == "text":
-                preview = (
-                    transcript_original[:500] + "..."
-                    if len(transcript_original) > 500
-                    else transcript_original
-                )
-                console.print(Panel(preview, title="Transcript Preview", border_style="green"))
-
-        except GPUError as e:
-            console.print(f"[red]✗ GPU Error:[/red] {e}")
-            console.print("[yellow]Retrying with CPU...[/yellow]")
-
-            # Retry with CPU
-            transcriber = WhisperTranscriber(model_size=model, device="cpu", gpu_device=gpu_device)
-            result = transcriber.transcribe(
-                audio_path,
-                language=language,
-                output_format=format,
-                metadata=metadata,
-                translate_to_english=translate,
-            )
-
-            # Handle translation results
-            transcript_original, transcript_translated, is_translated = handle_transcription_result(
-                result
-            )
 
         # Step 3: Save transcript(s)
         console.rule("[bold]Step 3/3: Saving Transcript(s)[/bold]")
@@ -426,6 +504,21 @@ def main(
         if verbose:
             console.print_exception()
         sys.exit(1)
+    finally:
+        # Show memory stats in verbose mode
+        if verbose and model_manager:
+            memory_stats = model_manager.get_memory_stats()
+            if memory_stats["loaded_transcribers"] > 0 or memory_stats["loaded_translators"] > 0:
+                console.print("\n[dim]Memory Usage:[/dim]")
+                console.print(
+                    f"[dim]  Loaded models: {memory_stats['loaded_transcribers']} transcriber(s), "
+                    f"{memory_stats['loaded_translators']} translator(s)[/dim]"
+                )
+                if "gpu_memory_allocated_mb" in memory_stats:
+                    console.print(
+                        f"[dim]  GPU memory: "
+                        f"{memory_stats['gpu_memory_allocated_mb']:.1f} MB allocated[/dim]"
+                    )
 
 
 if __name__ == "__main__":

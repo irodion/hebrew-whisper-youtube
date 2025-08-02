@@ -110,7 +110,7 @@ class AudioDownloader:
 
                     ydl.download([url])
 
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError, KeyError) as e:
             error_msg = f"Failed to download audio: {e!s}"
             raise DownloadError(error_msg) from e
 
