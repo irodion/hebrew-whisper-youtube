@@ -216,11 +216,14 @@ class DictaLMTranslator:
         if not previous_translations:
             return ""
 
+        def truncate(text: str, max_len: int = 100) -> str:
+            return text[:max_len] + "..." if len(text) > max_len else text
+
         context_lines = []
         for hebrew, english in previous_translations[-3:]:  # Use last 3 at most
             # Truncate very long lines to prevent token overflow
-            hebrew_truncated = hebrew[:100] + "..." if len(hebrew) > 100 else hebrew
-            english_truncated = english[:100] + "..." if len(english) > 100 else english
+            hebrew_truncated = truncate(hebrew)
+            english_truncated = truncate(english)
             context_lines.append(f"Hebrew: {hebrew_truncated}\nEnglish: {english_truncated}")
 
         if context_lines:
@@ -261,6 +264,7 @@ Hebrew subtitle text to translate:
         # Clean up any potential role-playing artifacts
         if translation.lower().startswith(("sure,", "here is", "here's", "the translation")):
             # Remove common prefixes that indicate the model is responding conversationally
+            lower_translation = translation.lower()
             for prefix in [
                 "sure, ",
                 "here is the translation: ",
@@ -268,7 +272,7 @@ Hebrew subtitle text to translate:
                 "the translation is: ",
                 "translation: ",
             ]:
-                if translation.lower().startswith(prefix):
+                if lower_translation.startswith(prefix):
                     translation = translation[len(prefix) :].strip()
                     break
 

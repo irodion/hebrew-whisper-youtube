@@ -103,6 +103,9 @@ class ConcurrentPlaylistProcessor:
             translation_context: Whether to use translation context
             context_lines: Number of context lines to use
         """
+        if not 0 <= context_lines <= 5:
+            msg = "context_lines must be between 0 and 5"
+            raise ValueError(msg)
         self.output_dir = output_dir
         self.transcriber = transcriber
         self.max_videos = max_videos
@@ -197,11 +200,13 @@ class ConcurrentPlaylistProcessor:
         elapsed_time = time.time() - start_time
         self._print_summary(len(tasks), elapsed_time)
 
-    def _extract_and_filter_playlist(self, playlist_url: str) -> tuple[list[dict[str, Any]], str]:
+    def _extract_and_filter_playlist(
+        self, playlist_url: str
+    ) -> tuple[list[dict[str, Any]], str | None]:
         """Extract playlist information and apply filtering.
 
         Returns:
-            Tuple of (filtered_videos, playlist_title)
+            Tuple of (filtered_videos, playlist_title or None)
         """
         try:
             ydl_opts = {
@@ -214,7 +219,7 @@ class ConcurrentPlaylistProcessor:
                 playlist_info = ydl.extract_info(playlist_url, download=False)
 
             videos = playlist_info["entries"]
-            playlist_title = playlist_info.get("title", "Unknown Playlist")
+            playlist_title = playlist_info.get("title", None)
 
             console.print(f"[green]✓[/green] Found playlist: {playlist_title}")
             console.print(f"[green]✓[/green] Total videos: {len(videos)}")
@@ -258,7 +263,7 @@ class ConcurrentPlaylistProcessor:
         return videos
 
     def _create_video_tasks(
-        self, videos: list[dict[str, Any]], output_format: str, playlist_title: str
+        self, videos: list[dict[str, Any]], output_format: str, playlist_title: str | None
     ) -> list[VideoTask]:
         """Create VideoTask objects for each video."""
         tasks = []
@@ -275,7 +280,7 @@ class ConcurrentPlaylistProcessor:
             output_path = self.output_dir / safe_filename
 
             # Create task with initial metadata containing playlist title
-            initial_metadata = {"playlist_title": playlist_title}
+            initial_metadata = {"playlist_title": playlist_title} if playlist_title else {}
 
             task = VideoTask(
                 index=i,

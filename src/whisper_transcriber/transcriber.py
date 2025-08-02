@@ -173,6 +173,9 @@ class WhisperTranscriber:
         Returns:
             Transcribed text in requested format, or tuple of (original, translated) if translating
         """
+        if not 0 <= context_lines <= 5:
+            msg = "context_lines must be between 0 and 5"
+            raise ValueError(msg)
         self._load_model()
 
         # Handle Hebrew model specifics

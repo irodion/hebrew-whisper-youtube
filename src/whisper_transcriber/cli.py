@@ -317,74 +317,6 @@ def _transcribe_audio_with_retry(
         return handle_transcription_result(result)
 
 
-@click.option(
-    "--translation-context/--no-translation-context",
-    default=True,
-    help="Include previous translations as context for consistency (default: enabled)",
-)
-@click.option(
-    "--context-lines",
-    type=int,
-    default=2,
-    help="Number of previous translated lines to include as context (0-5, default: 2)",
-)
-@click.argument("url")
-@click.argument("output", type=click.Path())
-@click.option(
-    "-m",
-    "--model",
-    type=click.Choice(WhisperTranscriber.AVAILABLE_MODELS),
-    default="ivrit-turbo",
-    help="Whisper model size. Hebrew models: ivrit-turbo (recommended), ivrit-large, ivrit-small",
-)
-@click.option(
-    "-l",
-    "--language",
-    default=None,
-    help="Source language (e.g., he for Hebrew). Auto-detect if not specified.",
-)
-@click.option(
-    "-f",
-    "--format",
-    type=click.Choice(["text", "srt", "vtt", "json"]),
-    default="text",
-    help="Output format (text includes metadata header, json includes full metadata)",
-)
-@click.option(
-    "--device",
-    type=click.Choice(["cuda", "cpu", "auto"]),
-    default="auto",
-    help="Device to use for transcription",
-)
-@click.option(
-    "--gpu-device",
-    type=int,
-    default=0,
-    help="GPU device ID to use for translation (default: 0)",
-)
-@click.option("--keep-audio", is_flag=True, help="Keep the downloaded audio file")
-@click.option(
-    "--translate",
-    is_flag=True,
-    help="Translate Hebrew transcripts to English (creates both _he and _en files)",
-)
-@click.option(
-    "--playlist",
-    is_flag=True,
-    help="Process entire YouTube playlist (output must be a directory)",
-)
-@click.option(
-    "--max-videos",
-    type=int,
-    default=None,
-    help="Maximum number of videos to process from playlist",
-)
-@click.option(
-    "--start-index",
-    type=int,
-    default=1,
-    help="Start processing from this video index (1-based)",
-)
 def _validate_inputs(url: str, context_lines: int) -> None:
     """Validate input parameters."""
     if not validate_url(url):
@@ -495,8 +427,76 @@ def _handle_single_video_processing(
         downloader.cleanup()
 
 
-@click.option("-v", "--verbose", is_flag=True, help="Verbose output")
 @click.command()
+@click.option(
+    "--translation-context/--no-translation-context",
+    default=True,
+    help="Include previous translations as context for consistency (default: enabled)",
+)
+@click.option(
+    "--context-lines",
+    type=int,
+    default=2,
+    help="Number of previous translated lines to include as context (0-5, default: 2)",
+)
+@click.argument("url")
+@click.argument("output", type=click.Path())
+@click.option(
+    "-m",
+    "--model",
+    type=click.Choice(WhisperTranscriber.AVAILABLE_MODELS),
+    default="ivrit-turbo",
+    help="Whisper model size. Hebrew models: ivrit-turbo (recommended), ivrit-large, ivrit-small",
+)
+@click.option(
+    "-l",
+    "--language",
+    default=None,
+    help="Source language (e.g., he for Hebrew). Auto-detect if not specified.",
+)
+@click.option(
+    "-f",
+    "--format",
+    type=click.Choice(["text", "srt", "vtt", "json"]),
+    default="text",
+    help="Output format (text includes metadata header, json includes full metadata)",
+)
+@click.option(
+    "--device",
+    type=click.Choice(["cuda", "cpu", "auto"]),
+    default="auto",
+    help="Device to use for transcription",
+)
+@click.option(
+    "--gpu-device",
+    type=int,
+    default=0,
+    help="GPU device ID to use for translation (default: 0)",
+)
+@click.option("--keep-audio", is_flag=True, help="Keep the downloaded audio file")
+@click.option(
+    "--translate",
+    is_flag=True,
+    help="Translate Hebrew transcripts to English (creates both _he and _en files)",
+)
+@click.option(
+    "--playlist",
+    is_flag=True,
+    help="Process entire YouTube playlist (output must be a directory)",
+)
+@click.option(
+    "--max-videos",
+    type=int,
+    default=None,
+    help="Maximum number of videos to process from playlist",
+)
+@click.option(
+    "--start-index",
+    type=int,
+    default=1,
+    help="Start processing from this video index (1-based)",
+)
+@click.option("-v", "--verbose", is_flag=True, help="Verbose output")
 def main(
     url: str,
     output: str,

@@ -70,6 +70,9 @@ class PlaylistProcessor:
             translation_context: Whether to use translation context
             context_lines: Number of context lines to use
         """
+        if not 0 <= context_lines <= 5:
+            msg = "context_lines must be between 0 and 5"
+            raise ValueError(msg)
         self.output_dir = output_dir
         self.transcriber = transcriber
         self.max_videos = max_videos
@@ -105,9 +108,11 @@ class PlaylistProcessor:
         try:
             playlist_info = self._extract_playlist_info(playlist_url)
             videos = playlist_info["entries"]
-            playlist_title = playlist_info.get("title", "Unknown Playlist")
+            playlist_title = playlist_info.get("title")
 
-            console.print(f"[green]✓[/green] Found playlist: {playlist_title}")
+            console.print(
+                f"[green]✓[/green] Found playlist: {playlist_title or 'Unknown Playlist'}"
+            )
             console.print(f"[green]✓[/green] Total videos: {len(videos)}")
 
             # Validate playlist size
@@ -229,7 +234,7 @@ class PlaylistProcessor:
             output_format: Output format extension
 
         Returns:
-            Safe filename with format: 0001_video_title.ext
+            Safe filename with format: NNNN_video_title.ext
         """
         # Clean title for use in filename
         safe_title = re.sub(r'[<>:"/\\|?*]', "_", title)  # Replace invalid chars
@@ -570,11 +575,11 @@ class PlaylistProcessor:
         self,
         success_count: int,
         failed_videos: list[tuple[int, str, str]],
-        playlist_title: str,
+        playlist_title: str | None,
     ) -> None:
         """Print processing summary with error categorization."""
         console.print("\n[bold green]Playlist Processing Complete![/bold green]")
-        console.print(f"Playlist: {playlist_title}")
+        console.print(f"Playlist: {playlist_title or 'Unknown Playlist'}")
 
         # Summary table
         table = Table(title="Processing Summary")
