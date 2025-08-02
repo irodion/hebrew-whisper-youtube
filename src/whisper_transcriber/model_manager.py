@@ -6,6 +6,7 @@ ensuring they persist across multiple transcription tasks to avoid repeated load
 
 from __future__ import annotations
 
+import gc
 import threading
 from typing import Any
 
@@ -37,18 +38,18 @@ class ModelManager:
 
     def __init__(self) -> None:
         """Initialize the model manager."""
-        with self._lock:
-            # Initialize attributes if not already present
-            if not hasattr(self, "_initialized"):
-                self._initialized = False
-                self._transcribers: dict[str, WhisperTranscriber] = {}
-                self._translators: dict[str, DictaLMTranslator] = {}
-                self._default_device: str | None = None
+        # Only initialize once
+        if hasattr(self, "_initialized"):
+            return
 
-            # Check if already initialized
-            if self._initialized:
+        with self._lock:
+            # Double-check after acquiring lock
+            if hasattr(self, "_initialized"):
                 return
 
+            self._transcribers: dict[str, WhisperTranscriber] = {}
+            self._translators: dict[str, DictaLMTranslator] = {}
+            self._default_device: str | None = None
             self._initialized = True
             console.print("[green]✓[/green] Model manager initialized")
 
@@ -83,23 +84,14 @@ class ModelManager:
         if force_reload and cache_key in self._transcribers:
             old_transcriber = self._transcribers.pop(cache_key)
             # Clean up old model properly
-            if hasattr(old_transcriber, "model") and old_transcriber.model is not None:
-                # Force model to CPU before deletion to free GPU memory
-                if hasattr(old_transcriber.model, "model"):
-                    old_transcriber.model.model = None
-                del old_transcriber.model
+            old_transcriber.cleanup()
             del old_transcriber
 
             # Force garbage collection to ensure memory is freed
-            import gc
-
             gc.collect()
 
             if device == "cuda" or (device is None and torch.cuda.is_available()):
                 torch.cuda.empty_cache()
-                # Synchronize CUDA to ensure all operations complete
-                if torch.cuda.is_available():
-                    torch.cuda.synchronize()
 
         # Return existing instance if available
         if cache_key in self._transcribers:
@@ -184,8 +176,7 @@ class ModelManager:
         cache_key = f"{model_size}_{device or 'auto'}_{gpu_device}_{compute_type}"
         if cache_key in self._transcribers:
             transcriber = self._transcribers.pop(cache_key)
-            if hasattr(transcriber, "model") and transcriber.model is not None:
-                del transcriber.model
+            transcriber.cleanup()
             del transcriber
             console.print(f"[dim]Cleaned up Whisper model: {model_size}[/dim]")
 
@@ -215,8 +206,7 @@ class ModelManager:
 
         # Clean up transcribers
         for transcriber in self._transcribers.values():
-            if hasattr(transcriber, "model") and transcriber.model is not None:
-                del transcriber.model
+            transcriber.cleanup()
         self._transcribers.clear()
 
         # Clean up translators

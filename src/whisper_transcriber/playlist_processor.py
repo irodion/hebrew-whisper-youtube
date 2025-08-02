@@ -7,6 +7,7 @@ Licensed under the MIT License - see LICENSE file for details.
 import queue
 import re
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -19,7 +20,7 @@ from yt_dlp import YoutubeDL
 from .downloader import AudioDownloader
 from .transcriber import WhisperTranscriber
 from .transcript_io import save_transcript_file
-from .utils import DownloadError, GPUError, TranscriptionError, console
+from .utils import DownloadError, GPUError, PlaylistSizeLimitError, TranscriptionError, console
 
 
 class PlaylistProcessor:
@@ -77,9 +78,7 @@ class PlaylistProcessor:
         # Concurrent processing components
         self.download_queue: queue.Queue[Any] = queue.Queue(maxsize=self.DOWNLOAD_QUEUE_SIZE)
         self.download_complete_event = threading.Event()
-        self.downloads_active = 0
         self.download_lock = threading.Lock()
-        self.downloader = AudioDownloader()
 
     def process_playlist(
         self,
@@ -107,15 +106,17 @@ class PlaylistProcessor:
 
             # Validate playlist size
             if len(videos) > self.MAX_PLAYLIST_SIZE:
-                console.print(
-                    f"[red]✗ Playlist too large:[/red] {len(videos)} videos found, "
+                error_msg = (
+                    f"Playlist too large: {len(videos)} videos found, "
                     f"maximum supported is {self.MAX_PLAYLIST_SIZE}"
                 )
-                return
+                console.print(f"[red]✗ {error_msg}[/red]")
+                raise PlaylistSizeLimitError(error_msg)
 
-        except (KeyError, ValueError) as e:
+        except Exception as e:
             console.print(f"[red]✗ Failed to extract playlist:[/red] {e}")
-            return
+            error_msg = f"Failed to extract playlist: {e}"
+            raise DownloadError(error_msg) from e
 
         # Apply filtering
         videos = self._filter_videos(videos)
@@ -373,7 +374,7 @@ class PlaylistProcessor:
 
                 # Small sleep to prevent busy waiting
                 if download_futures and transcribe_index < len(video_tasks):
-                    threading.Event().wait(0.1)
+                    time.sleep(0.1)
 
         return results
 
@@ -488,7 +489,8 @@ class PlaylistProcessor:
         """Process a single video from the playlist."""
         # Download audio
         try:
-            audio_path, metadata = self.downloader.download(video_url, keep_audio=self.keep_audio)
+            downloader = AudioDownloader()
+            audio_path, metadata = downloader.download(video_url, keep_audio=self.keep_audio)
         except DownloadError as e:
             msg = f"Download failed: {e}"
             raise TranscriptionError(msg) from e
@@ -644,10 +646,6 @@ class PlaylistProcessor:
 
     def cleanup(self) -> None:
         """Clean up resources used by the playlist processor."""
-        # Clean up downloader resources
-        if hasattr(self, "downloader"):
-            self.downloader.cleanup()
-
         # Clear GPU cache if available
         if torch.cuda.is_available():
             torch.cuda.empty_cache()

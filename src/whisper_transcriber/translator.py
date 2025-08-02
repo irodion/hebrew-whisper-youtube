@@ -4,6 +4,7 @@ Copyright (c) 2025 Whisper Transcriber Contributors
 Licensed under the MIT License - see LICENSE file for details.
 """
 
+import time
 from typing import Any, ClassVar
 
 import torch
@@ -176,10 +177,8 @@ class DictaLMTranslator:
                     console.print(
                         f"[yellow]Translation attempt {attempt + 1} failed, retrying...[/yellow]"
                     )
-                    # Small delay before retry
-                    import time
-
-                    time.sleep(0.5)
+                    # Exponential backoff with base delay of 0.5 seconds
+                    time.sleep(0.5 * (2**attempt))
                 else:
                     # Final attempt failed
                     console.print(
@@ -194,8 +193,9 @@ class DictaLMTranslator:
                     # Return original text as fallback with clear indication this is not translated
                     return f"[UNTRANSLATED] {text}"
 
-        # Should never reach here, but add return for type checker
-        return f"[UNTRANSLATED] {text}"
+        # Unreachable, but required for static type checkers
+        msg = "Should never reach here"
+        raise AssertionError(msg)
 
     def translate_segments(self, segments: list[Any]) -> list[dict[str, Any]]:
         """Translate a list of transcription segments from Hebrew to English.

@@ -12,6 +12,7 @@ import torch
 from faster_whisper import WhisperModel
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
+from .model_manager import get_model_manager
 from .resource_manager import managed_gpu_memory
 from .utils import GPUError, TranslationError, check_cuda_availability, console
 
@@ -303,8 +304,6 @@ class WhisperTranscriber:
         # Use GPU memory management context
         with managed_gpu_memory():
             # Get translator from model manager for efficiency
-            from .model_manager import get_model_manager
-
             model_manager = get_model_manager()
 
             try:
@@ -417,3 +416,11 @@ class WhisperTranscriber:
         output = {"metadata": clean_metadata, "transcript": transcript_segments}
 
         return json.dumps(output, ensure_ascii=False, indent=2)
+
+    def cleanup(self) -> None:
+        """Clean up model from memory."""
+        if self.model is not None:
+            del self.model
+            self.model = None
+        if self.device == "cuda":
+            torch.cuda.empty_cache()

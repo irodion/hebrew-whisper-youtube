@@ -40,10 +40,13 @@ def managed_temp_directory(prefix: str = "whisper_") -> Generator[str, None, Non
 
 
 @contextlib.contextmanager
-def managed_gpu_memory() -> Generator[None, None, None]:
+def managed_gpu_memory(report_threshold_mb: float = 100) -> Generator[None, None, None]:
     """Context manager for GPU memory management.
 
     Clears GPU cache before and after operations to minimize fragmentation.
+
+    Args:
+        report_threshold_mb: Threshold in MB for reporting memory changes (default: 100)
     """
     initial_memory = 0
 
@@ -63,7 +66,7 @@ def managed_gpu_memory() -> Generator[None, None, None]:
             # Report memory usage if significant
             final_memory = torch.cuda.memory_allocated()
             memory_diff = final_memory - initial_memory
-            if memory_diff > 100 * 1024 * 1024:  # More than 100MB
+            if memory_diff > report_threshold_mb * 1024 * 1024:
                 console.print(
                     f"[dim]GPU memory increased by {memory_diff / 1024 / 1024:.1f} MB[/dim]"
                 )
@@ -134,6 +137,7 @@ class ResourceTracker:
         with timed_operation(operation_name, self.verbose) as metadata:
             self.operations.append(metadata)
 
+            initial_gpu_memory = 0
             if torch.cuda.is_available():
                 initial_gpu_memory = torch.cuda.memory_allocated()
 
@@ -153,7 +157,7 @@ class ResourceTracker:
                     shutil.rmtree(temp_dir, ignore_errors=True)
                     if self.verbose:
                         console.print(f"[dim]Cleaned up temp directory: {temp_dir}[/dim]")
-                except (OSError, PermissionError) as e:
+                except OSError as e:
                     console.print(f"[yellow]Warning: Failed to clean up {temp_dir}: {e}[/yellow]")
 
         self.temp_dirs.clear()
