@@ -30,6 +30,10 @@ class TranslationError(TranscriptionError):
     """Error during translation."""
 
 
+class PlaylistSizeLimitError(TranscriptionError):
+    """Error when playlist exceeds maximum allowed size."""
+
+
 def check_cuda_availability() -> tuple[bool, str | None]:
     """Check if CUDA is available and return status with GPU info.
 

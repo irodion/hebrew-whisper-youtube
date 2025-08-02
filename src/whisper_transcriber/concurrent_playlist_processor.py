@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import queue
 import re
+import shutil
 import tempfile
 import threading
 import time
@@ -29,6 +30,8 @@ from rich.progress import (
 )
 from rich.table import Table
 from yt_dlp import YoutubeDL
+from yt_dlp.utils import DownloadError as YtDlpDownloadError
+from yt_dlp.utils import ExtractorError
 
 from .downloader import AudioDownloader
 from .model_manager import get_model_manager
@@ -37,6 +40,7 @@ from .transcript_io import save_transcript_file
 from .utils import (
     DownloadError,
     GPUError,
+    PlaylistSizeLimitError,
     TranscriptionError,
     TranslationError,
 )
@@ -171,7 +175,6 @@ class ConcurrentPlaylistProcessor:
                 # Submit transcription worker
                 transcribe_future = executor.submit(
                     self._transcribe_worker,
-                    tasks,
                     language,
                     output_format,
                     progress,
@@ -208,18 +211,25 @@ class ConcurrentPlaylistProcessor:
 
             # Validate playlist size
             if len(videos) > self.MAX_PLAYLIST_SIZE:
-                console.print(
-                    f"[red]✗ Playlist too large:[/red] {len(videos)} videos, "
-                    f"max {self.MAX_PLAYLIST_SIZE}"
+                error_msg = (
+                    f"Playlist contains {len(videos)} videos, which exceeds the maximum "
+                    f"allowed size of {self.MAX_PLAYLIST_SIZE} videos"
                 )
-                return []
+                raise PlaylistSizeLimitError(error_msg)
 
             # Apply filtering
             return self._filter_videos(videos)
 
-        except (KeyError, ValueError, RuntimeError) as e:
+        except (
+            OSError,
+            RuntimeError,
+            ValueError,
+            KeyError,
+            YtDlpDownloadError,
+            ExtractorError,
+        ) as e:
             console.print(f"[red]✗ Failed to extract playlist:[/red] {e}")
-            return []
+            raise
 
     def _filter_videos(self, videos: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Apply start_index and max_videos filtering."""
@@ -294,6 +304,7 @@ class ConcurrentPlaylistProcessor:
             try:
                 # Create temporary directory for this download
                 temp_dir = tempfile.mkdtemp(prefix=f"whisper_video_{task.index}_")
+                # Track directory immediately to ensure cleanup on failure
                 with self.download_lock:
                     self.temp_dirs.append(temp_dir)
 
@@ -330,7 +341,6 @@ class ConcurrentPlaylistProcessor:
 
     def _transcribe_worker(
         self,
-        tasks: list[VideoTask],  # noqa: ARG002
         language: str | None,
         output_format: str,
         progress: Progress,
@@ -434,12 +444,7 @@ class ConcurrentPlaylistProcessor:
         """Clean up all temporary directories."""
         for temp_dir in self.temp_dirs:
             if os.path.exists(temp_dir):
-                try:
-                    import shutil
-
-                    shutil.rmtree(temp_dir, ignore_errors=True)
-                except (OSError, PermissionError):
-                    pass  # Already logged by rmtree with ignore_errors
+                shutil.rmtree(temp_dir, ignore_errors=True)
 
     def _print_summary(self, total_videos: int, elapsed_time: float) -> None:
         """Print processing summary with performance metrics."""

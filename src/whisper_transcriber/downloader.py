@@ -11,6 +11,8 @@ from typing import Any
 
 from rich.progress import BarColumn, DownloadColumn, Progress, SpinnerColumn, TaskID, TextColumn
 from yt_dlp import YoutubeDL
+from yt_dlp.utils import DownloadError as YtDlpDownloadError
+from yt_dlp.utils import ExtractorError
 
 from .utils import DownloadError, check_disk_space, console
 
@@ -110,7 +112,14 @@ class AudioDownloader:
 
                     ydl.download([url])
 
-        except (OSError, RuntimeError, ValueError, KeyError) as e:
+        except (
+            OSError,
+            RuntimeError,
+            ValueError,
+            KeyError,
+            YtDlpDownloadError,
+            ExtractorError,
+        ) as e:
             error_msg = f"Failed to download audio: {e!s}"
             raise DownloadError(error_msg) from e
 

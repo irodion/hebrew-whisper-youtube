@@ -22,6 +22,7 @@ from .transcript_io import save_transcript_file
 from .utils import (
     DownloadError,
     GPUError,
+    PlaylistSizeLimitError,
     TranscriptionError,
     check_cuda_availability,
     get_language_filename,
@@ -171,7 +172,7 @@ def process_playlist(
         console.print("[bold green]All done! 🎉[/bold green]")
     except KeyboardInterrupt:
         console.print("\n[yellow]Processing interrupted by user[/yellow]")
-    except (DownloadError, TranscriptionError, GPUError) as e:
+    except (DownloadError, TranscriptionError, GPUError, PlaylistSizeLimitError) as e:
         console.print(f"[red]✗ Playlist processing failed:[/red] {e}")
         sys.exit(1)
     finally:
@@ -389,6 +390,7 @@ def main(
     - ivrit-small: Hebrew-optimized, smallest size
     - Standard OpenAI models: tiny, base, small, medium, large, large-v2, large-v3
     """
+    model_manager = None
     try:
         # Print header
         console.print(
@@ -519,6 +521,10 @@ def main(
                         f"[dim]  GPU memory: "
                         f"{memory_stats['gpu_memory_allocated_mb']:.1f} MB allocated[/dim]"
                     )
+
+        # Clean up model manager resources to free GPU memory
+        if model_manager:
+            model_manager.cleanup_all()
 
 
 if __name__ == "__main__":
