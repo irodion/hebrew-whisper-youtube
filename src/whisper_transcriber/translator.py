@@ -197,11 +197,174 @@ class DictaLMTranslator:
         msg = "Should never reach here"
         raise AssertionError(msg)
 
-    def translate_segments(self, segments: list[Any]) -> list[dict[str, Any]]:
+    def _build_metadata_context(self, metadata: dict[str, Any] | None) -> list[str]:
+        """Build context from metadata."""
+        context_parts = []
+        if metadata:
+            if metadata.get("title"):
+                context_parts.append(f"Video title: {metadata['title']}")
+            if metadata.get("channel"):
+                context_parts.append(f"Channel: {metadata['channel']}")
+            if metadata.get("playlist_title"):
+                context_parts.append(f"Playlist: {metadata['playlist_title']}")
+        return context_parts
+
+    def _build_previous_translations_context(
+        self, previous_translations: list[tuple[str, str]] | None
+    ) -> str:
+        """Build context from previous translations."""
+        if not previous_translations:
+            return ""
+
+        def truncate(text: str, max_len: int = 100) -> str:
+            return text[:max_len] + "..." if len(text) > max_len else text
+
+        context_lines = []
+        for hebrew, english in previous_translations[-3:]:  # Use last 3 at most
+            # Truncate very long lines to prevent token overflow
+            hebrew_truncated = truncate(hebrew)
+            english_truncated = truncate(english)
+            context_lines.append(f"Hebrew: {hebrew_truncated}\nEnglish: {english_truncated}")
+
+        if context_lines:
+            return "\n\nPrevious translations for context:\n" + "\n\n".join(context_lines)
+        return ""
+
+    def _create_translation_prompt(
+        self, text: str, context_parts: list[str], previous_context: str
+    ) -> str:
+        """Create the translation prompt."""
+        context_str = "\n".join(context_parts) if context_parts else ""
+
+        return f"""<s>[INST] You are a professional subtitle translator \
+specializing in video content translation.
+You are translating subtitles from a video, not having a conversation.
+{context_str}{previous_context}
+
+Instructions:
+1. Translate the Hebrew subtitle text to English
+2. Maintain the same tone and style as the original
+3. Use consistent terminology with the previous translations shown above
+4. Do NOT treat the text as a question or dialogue with you
+5. Do NOT add any commentary or explanation
+6. Output ONLY the English translation
+
+Hebrew subtitle text to translate:
+{text.strip()}
+[/INST]"""
+
+    def _clean_translation_output(self, decoded: str) -> str:
+        """Clean and extract translation from model output."""
+        # Extract just the translation
+        if "[/INST]" in decoded:
+            translation = decoded.split("[/INST]", 1)[1].strip()
+        else:
+            translation = decoded.strip()
+
+        # Clean up any potential role-playing artifacts
+        if translation.lower().startswith(("sure,", "here is", "here's", "the translation")):
+            # Remove common prefixes that indicate the model is responding conversationally
+            lower_translation = translation.lower()
+            for prefix in [
+                "sure, ",
+                "here is the translation: ",
+                "here's the translation: ",
+                "the translation is: ",
+                "translation: ",
+            ]:
+                if lower_translation.startswith(prefix):
+                    translation = translation[len(prefix) :].strip()
+                    break
+
+        return str(translation)
+
+    def translate_with_context(
+        self,
+        text: str,
+        metadata: dict[str, Any] | None = None,
+        previous_translations: list[tuple[str, str]] | None = None,
+        max_retries: int = 2,
+    ) -> str:
+        """Translate text with additional context for better accuracy.
+
+        Args:
+            text: Hebrew text to translate
+            metadata: Optional metadata containing video title, channel, etc.
+            previous_translations: Optional list of (hebrew, english) tuples for context
+            max_retries: Maximum number of retry attempts (default: 2)
+
+        Returns:
+            English translation
+        """
+        if not text.strip():
+            return ""
+
+        self._load_model()
+        assert self.model is not None
+        assert self.tokenizer is not None
+
+        # Build context components
+        context_parts = self._build_metadata_context(metadata)
+        previous_context = self._build_previous_translations_context(previous_translations)
+        prompt = self._create_translation_prompt(text, context_parts, previous_context)
+
+        for attempt in range(max_retries + 1):
+            try:
+                # Tokenize input
+                inputs = self.tokenizer(prompt, return_tensors="pt")
+                # Move to device
+                inputs = {k: v.to(self.device) for k, v in inputs.items()}
+
+                # Generate translation with slightly higher token limit for context
+                with torch.no_grad():
+                    outputs = self.model.generate(
+                        **inputs,
+                        max_new_tokens=150,  # Slightly more for context-aware translation
+                        do_sample=False,  # Deterministic output
+                        temperature=1.0,
+                        pad_token_id=self.tokenizer.eos_token_id,
+                    )
+
+                # Decode and clean output
+                decoded = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+                return self._clean_translation_output(decoded)
+
+            except (RuntimeError, torch.cuda.OutOfMemoryError):
+                if attempt < max_retries:
+                    # Clear GPU cache and retry
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    console.print(
+                        f"[yellow]Translation attempt {attempt + 1} failed, retrying...[/yellow]"
+                    )
+                    # Exponential backoff with base delay of 0.5 seconds
+                    time.sleep(0.5 * (2**attempt))
+                else:
+                    # Final attempt failed - fallback to simple translation
+                    console.print(
+                        "[yellow]Context-aware translation failed, "
+                        "trying simple translation[/yellow]"
+                    )
+                    return self.translate_text(text, max_retries=1)
+
+        # Unreachable, but required for static type checkers
+        msg = "Should never reach here"
+        raise AssertionError(msg)
+
+    def translate_segments(
+        self,
+        segments: list[Any],
+        metadata: dict[str, Any] | None = None,
+        use_context: bool = True,
+        context_lines: int = 2,
+    ) -> list[dict[str, Any]]:
         """Translate a list of transcription segments from Hebrew to English.
 
         Args:
             segments: List of segments with 'start', 'end', and 'text' attributes
+            metadata: Optional metadata containing video title, channel, etc.
+            use_context: Whether to use previous translations as context
+            context_lines: Number of previous translations to include as context
 
         Returns:
             List of translated segments as dictionaries
@@ -209,6 +372,7 @@ class DictaLMTranslator:
         self._load_model()
 
         translated_segments = []
+        previous_translations: list[tuple[str, str]] = []
 
         with Progress(
             SpinnerColumn(),
@@ -221,8 +385,21 @@ class DictaLMTranslator:
             task = progress.add_task("Translating to English...", total=len(segments))
 
             for segment in segments:
-                # Translate the text
-                translated_text = self.translate_text(segment.text)
+                # Use context-aware translation if metadata is provided
+                if metadata and use_context and context_lines > 0:
+                    # Use previous translations for context if available
+                    context_to_use = (
+                        previous_translations[-context_lines:] if previous_translations else None
+                    )
+                    translated_text = self.translate_with_context(
+                        segment.text, metadata, context_to_use
+                    )
+                elif metadata:
+                    # Use basic context-aware translation without previous translations
+                    translated_text = self.translate_with_context(segment.text, metadata)
+                else:
+                    # Fallback to simple translation
+                    translated_text = self.translate_text(segment.text)
 
                 # Create translated segment
                 translated_segment = {
@@ -231,6 +408,17 @@ class DictaLMTranslator:
                     "text": translated_text,
                 }
                 translated_segments.append(translated_segment)
+
+                # Add to previous translations context (only if not empty and not error)
+                if (
+                    translated_text.strip()
+                    and not translated_text.startswith("[UNTRANSLATED]")
+                    and len(translated_text) < 500
+                ):  # Skip very long translations for context
+                    previous_translations.append((segment.text, translated_text))
+                    # Keep only recent translations to prevent memory buildup
+                    if len(previous_translations) > 10:
+                        previous_translations = previous_translations[-10:]
 
                 progress.update(task, advance=1)
 

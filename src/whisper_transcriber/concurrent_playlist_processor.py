@@ -86,6 +86,8 @@ class ConcurrentPlaylistProcessor:
         translate: bool = False,
         verbose: bool = False,
         download_workers: int | None = None,
+        translation_context: bool = True,
+        context_lines: int = 2,
     ) -> None:
         """Initialize the concurrent playlist processor.
 
@@ -98,7 +100,12 @@ class ConcurrentPlaylistProcessor:
             translate: Whether to translate transcripts
             verbose: Whether to show verbose output
             download_workers: Number of concurrent download workers
+            translation_context: Whether to use translation context
+            context_lines: Number of context lines to use
         """
+        if not 0 <= context_lines <= 5:
+            msg = "context_lines must be between 0 and 5"
+            raise ValueError(msg)
         self.output_dir = output_dir
         self.transcriber = transcriber
         self.max_videos = max_videos
@@ -107,6 +114,8 @@ class ConcurrentPlaylistProcessor:
         self.translate = translate
         self.verbose = verbose
         self.download_workers = download_workers or self.DEFAULT_DOWNLOAD_WORKERS
+        self.translation_context = translation_context
+        self.context_lines = context_lines
 
         # Threading components
         self.download_queue: queue.Queue[VideoTask] = queue.Queue(maxsize=self.DOWNLOAD_QUEUE_SIZE)
@@ -142,14 +151,14 @@ class ConcurrentPlaylistProcessor:
 
         # Extract playlist information
         console.print("[bold]Extracting playlist information...[/bold]")
-        videos = self._extract_and_filter_playlist(playlist_url)
+        videos, playlist_title = self._extract_and_filter_playlist(playlist_url)
 
         if not videos:
             console.print("[yellow]No videos to process after filtering[/yellow]")
             return
 
         # Create video tasks
-        tasks = self._create_video_tasks(videos, output_format)
+        tasks = self._create_video_tasks(videos, output_format, playlist_title)
 
         # Process videos concurrently
         with Progress(
@@ -191,8 +200,14 @@ class ConcurrentPlaylistProcessor:
         elapsed_time = time.time() - start_time
         self._print_summary(len(tasks), elapsed_time)
 
-    def _extract_and_filter_playlist(self, playlist_url: str) -> list[dict[str, Any]]:
-        """Extract playlist information and apply filtering."""
+    def _extract_and_filter_playlist(
+        self, playlist_url: str
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        """Extract playlist information and apply filtering.
+
+        Returns:
+            Tuple of (filtered_videos, playlist_title or None)
+        """
         try:
             ydl_opts = {
                 "quiet": True,
@@ -204,7 +219,7 @@ class ConcurrentPlaylistProcessor:
                 playlist_info = ydl.extract_info(playlist_url, download=False)
 
             videos = playlist_info["entries"]
-            playlist_title = playlist_info.get("title", "Unknown Playlist")
+            playlist_title = playlist_info.get("title", None)
 
             console.print(f"[green]✓[/green] Found playlist: {playlist_title}")
             console.print(f"[green]✓[/green] Total videos: {len(videos)}")
@@ -218,7 +233,8 @@ class ConcurrentPlaylistProcessor:
                 raise PlaylistSizeLimitError(error_msg)
 
             # Apply filtering
-            return self._filter_videos(videos)
+            filtered_videos = self._filter_videos(videos)
+            return filtered_videos, playlist_title
 
         except (
             OSError,
@@ -247,7 +263,7 @@ class ConcurrentPlaylistProcessor:
         return videos
 
     def _create_video_tasks(
-        self, videos: list[dict[str, Any]], output_format: str
+        self, videos: list[dict[str, Any]], output_format: str, playlist_title: str | None
     ) -> list[VideoTask]:
         """Create VideoTask objects for each video."""
         tasks = []
@@ -263,11 +279,15 @@ class ConcurrentPlaylistProcessor:
             safe_filename = self._generate_safe_filename(i, video_title, output_format)
             output_path = self.output_dir / safe_filename
 
+            # Create task with initial metadata containing playlist title
+            initial_metadata = {"playlist_title": playlist_title} if playlist_title else {}
+
             task = VideoTask(
                 index=i,
                 title=video_title,
                 url=video_url,
                 output_path=output_path,
+                metadata=initial_metadata,
             )
             tasks.append(task)
 
@@ -316,6 +336,10 @@ class ConcurrentPlaylistProcessor:
                 # Download audio
                 audio_path, metadata = downloader.download(task.url, keep_audio=self.keep_audio)
                 task.audio_path = audio_path
+
+                # Merge playlist metadata with download metadata
+                if task.metadata:
+                    metadata.update(task.metadata)
                 task.metadata = metadata
 
                 # Put in transcription queue
@@ -390,6 +414,8 @@ class ConcurrentPlaylistProcessor:
                     output_format=output_format,
                     metadata=task.metadata,
                     translate_to_english=self.translate,
+                    use_translation_context=self.translation_context,
+                    context_lines=self.context_lines,
                 )
 
                 # Handle results

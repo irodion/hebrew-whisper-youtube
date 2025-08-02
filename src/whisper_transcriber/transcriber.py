@@ -155,6 +155,8 @@ class WhisperTranscriber:
         output_format: str = "text",
         metadata: dict[str, Any] | None = None,
         translate_to_english: bool = False,
+        use_translation_context: bool = True,
+        context_lines: int = 2,
     ) -> str | tuple[str, str]:
         """Transcribe audio file.
 
@@ -165,10 +167,15 @@ class WhisperTranscriber:
             output_format: 'text', 'srt', 'vtt', or 'json'
             metadata: Optional video metadata dict for enhanced output
             translate_to_english: If True and Hebrew detected, also translate to English
+            use_translation_context: Whether to use previous translations as context
+            context_lines: Number of previous translations to include as context
 
         Returns:
             Transcribed text in requested format, or tuple of (original, translated) if translating
         """
+        if not 0 <= context_lines <= 5:
+            msg = "context_lines must be between 0 and 5"
+            raise ValueError(msg)
         self._load_model()
 
         # Handle Hebrew model specifics
@@ -182,7 +189,9 @@ class WhisperTranscriber:
 
         # Handle translation if requested
         if self._should_translate(translate_to_english, language, info):
-            translated = self._perform_translation(segments_list, output_format, metadata, info)
+            translated = self._perform_translation(
+                segments_list, output_format, metadata, info, use_translation_context, context_lines
+            )
             if translated:
                 return original, translated
 
@@ -297,6 +306,8 @@ class WhisperTranscriber:
         output_format: str,
         metadata: dict[str, Any] | None,
         info: Any,
+        use_context: bool = True,
+        context_lines: int = 2,
     ) -> str | None:
         """Perform translation and return formatted translated output."""
         console.rule("[bold]Step 2.5/3: Translating to English[/bold]")
@@ -311,8 +322,10 @@ class WhisperTranscriber:
                     device=self.device, gpu_device=self.gpu_device
                 )
 
-                # Translate segments
-                translated_segments = translator.translate_segments(segments_list)
+                # Translate segments with metadata and context settings for better continuity
+                translated_segments = translator.translate_segments(
+                    segments_list, metadata, use_context, context_lines
+                )
 
                 # Format translated output
                 if output_format == "text":
