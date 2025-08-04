@@ -155,3 +155,17 @@ notes.txt
 TODO.txt
 .notes/
 scratch/
+
+# Environment variables
+.env
+
+# Output directories and test files
+yam_sailing/
+example.md
+output.json
+output_en.srt
+output_he.srt
+test_*.py
+translate_*.md
+translate_*.sh
+TRANSLATOR_IMPROVEMENTS.md

@@ -143,10 +143,12 @@ def process_playlist(
     gpu_device: int,
     keep_audio: bool,
     translate: bool,
+    translator: str,
     max_videos: int | None,
     start_index: int,
     verbose: bool,
     transcriber: WhisperTranscriber | None = None,
+    translation_batch_size: int | None = None,
 ) -> None:
     """Process a YouTube playlist."""
     # Use provided transcriber or get from model manager
@@ -164,7 +166,9 @@ def process_playlist(
         start_index=start_index,
         keep_audio=keep_audio,
         translate=translate,
+        translator=translator,
         verbose=verbose,
+        translation_batch_size=translation_batch_size,
     )
 
     try:
@@ -231,7 +235,9 @@ def _transcribe_audio_with_retry(
     format: str,  # noqa: A002
     metadata: dict[str, Any],
     translate: bool,
+    translator: str,
     verbose: bool,
+    translation_batch_size: int | None = None,
 ) -> tuple[str, str | None, bool]:
     """Transcribe audio with GPU fallback to CPU.
 
@@ -244,7 +250,9 @@ def _transcribe_audio_with_retry(
         format: Output format
         metadata: Video metadata
         translate: Whether to translate
+        translator: Translation model to use (local or qwen)
         verbose: Whether to show verbose output
+        translation_batch_size: Batch size for translation (1-50)
 
     Returns:
         tuple: (transcript_original, transcript_translated, is_translated)
@@ -264,6 +272,8 @@ def _transcribe_audio_with_retry(
             output_format=format,
             metadata=metadata,
             translate_to_english=translate,
+            translator_type=translator,
+            translation_batch_size=translation_batch_size,
         )
 
         # Handle translation results
@@ -299,6 +309,8 @@ def _transcribe_audio_with_retry(
             output_format=format,
             metadata=metadata,
             translate_to_english=translate,
+            translator_type=translator,
+            translation_batch_size=translation_batch_size,
         )
 
         # Handle translation results
@@ -347,6 +359,18 @@ def _transcribe_audio_with_retry(
     help="Translate Hebrew transcripts to English (creates both _he and _en files)",
 )
 @click.option(
+    "--translator",
+    type=click.Choice(["local", "qwen"]),
+    default="local",
+    help="Translation model to use: local (DictaLM) or qwen (Qwen-MT online)",
+)
+@click.option(
+    "--translation-batch-size",
+    type=click.IntRange(1, 50),
+    default=None,
+    help="Batch size for Qwen translation (1-50). Overrides QWEN_TRANSLATION_BATCH_SIZE env var",
+)
+@click.option(
     "--playlist",
     is_flag=True,
     help="Process entire YouTube playlist (output must be a directory)",
@@ -374,6 +398,8 @@ def main(
     gpu_device: int,
     keep_audio: bool,
     translate: bool,
+    translator: str,
+    translation_batch_size: int | None,
     playlist: bool,
     max_videos: int | None,
     start_index: int,
@@ -448,10 +474,12 @@ def main(
                 gpu_device,
                 keep_audio,
                 translate,
+                translator,
                 max_videos,
                 start_index,
                 verbose,
                 transcriber=transcriber,
+                translation_batch_size=translation_batch_size,
             )
             return
 
@@ -468,7 +496,9 @@ def main(
             format,
             metadata,
             translate,
+            translator,
             verbose,
+            translation_batch_size,
         )
 
         # Step 3: Save transcript(s)

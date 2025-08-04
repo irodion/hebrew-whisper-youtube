@@ -7,6 +7,7 @@ A CLI tool to download YouTube audio and transcribe it using OpenAI Whisper with
 - Download audio from YouTube videos
 - Transcribe audio using OpenAI Whisper (via faster-whisper)
 - **Hebrew-optimized models** from ivrit-ai for superior Hebrew transcription quality
+- **Hebrew-to-English Translation** with choice of local or online translation models
 - GPU acceleration support (CUDA)
 - Multiple output formats (text, SRT, VTT)
 - Progress indicators and rich CLI interface
@@ -99,12 +100,87 @@ whisper-transcriber -v "https://youtube.com/watch?v=VIDEO_ID" output.txt
 ### Standard OpenAI Models
 - `tiny`, `base`, `small`, `medium`, `large`, `large-v2`, `large-v3`
 
+## Translation Support
+
+### Hebrew-to-English Translation
+
+The tool supports translating Hebrew transcripts to English using two different approaches:
+
+#### Local Translation (Default)
+Uses DictaLM 2.0-Instruct model running locally for privacy and offline capability:
+
+```bash
+# Translate Hebrew to English using local model
+whisper-transcriber --translate "https://youtube.com/watch?v=VIDEO_ID" output.txt
+# Creates both output_he.txt and output_en.txt
+```
+
+#### Online Translation (Qwen-MT)
+Uses Qwen-MT-turbo online model for potentially higher quality translation with full transcript context:
+
+```bash
+# Translate using Qwen-MT online model
+whisper-transcriber --translate --translator qwen "https://youtube.com/watch?v=VIDEO_ID" output.txt
+# Creates both output_he.txt and output_en.txt
+```
+
+### Translation Setup
+
+#### For Local Translation (DictaLM)
+No additional setup required - the model downloads automatically on first use.
+
+#### For Online Translation (Qwen-MT)
+1. Copy the environment template:
+   ```bash
+   cp .env.example .env
+   ```
+
+2. Get your API key from [Dashscope Console](https://dashscope.console.aliyun.com/)
+
+3. Add your API key to `.env`:
+   ```env
+   DASHSCOPE_API_KEY=your_api_key_here
+   ```
+
+### Translation Options
+
+```bash
+# Local translation (default) - privacy focused, offline capable
+whisper-transcriber --translate --translator local "URL" output.txt
+
+# Online translation - higher quality, requires internet and API key
+whisper-transcriber --translate --translator qwen "URL" output.txt
+
+# Works with playlists too
+whisper-transcriber --translate --translator qwen --playlist "PLAYLIST_URL" output_dir/
+```
+
+### Translation Quality Comparison
+
+- **Local (DictaLM)**:
+  - ✅ Privacy-focused (runs locally)
+  - ✅ No API key required
+  - ✅ Works offline
+  - ⚠️ Segment-by-segment translation
+
+- **Online (Qwen-MT)**:
+  - ✅ Full transcript context for better coherence
+  - ✅ Metadata context (video title, playlist, description)
+  - ✅ Higher translation quality
+  - ⚠️ Requires internet connection and API key
+  - ⚠️ Sends data to external service
+
 ## CLI Options
 
 - `-m, --model`: Model to use (default: ivrit-turbo)
 - `-l, --language`: Source language code (auto-detected for standard models, forced to 'he' for Hebrew models)
 - `-f, --format`: Output format: text, srt, vtt (default: text)
 - `--device`: Device to use: cuda, cpu, auto (default: auto)
+- `--translate`: Translate Hebrew transcripts to English (creates both `_he` and `_en` files)
+- `--translator`: Translation model: local (DictaLM) or qwen (Qwen-MT online) (default: local)
+- `--playlist`: Process entire YouTube playlist
+- `--max-videos`: Maximum number of videos to process from playlist
+- `--start-index`: Start processing from this video index (1-based)
 - `--keep-audio`: Keep the downloaded audio file
 - `-v, --verbose`: Enable verbose output
 

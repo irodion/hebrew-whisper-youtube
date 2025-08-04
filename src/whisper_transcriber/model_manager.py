@@ -13,6 +13,7 @@ from typing import Any
 import torch
 from rich.console import Console
 
+from .qwen_translator import QwenMTTranslator
 from .transcriber import WhisperTranscriber
 from .translator import DictaLMTranslator
 from .utils import GPUError, TranslationError
@@ -113,20 +114,35 @@ class ModelManager:
             raise
 
     def get_translator(
-        self, device: str | None = None, gpu_device: int = 0, force_reload: bool = False
-    ) -> DictaLMTranslator:
-        """Get or create a DictaLMTranslator instance.
+        self,
+        device: str | None = None,
+        gpu_device: int = 0,
+        force_reload: bool = False,
+        translator_type: str = "local",
+        translation_batch_size: int | None = None,
+    ) -> DictaLMTranslator | QwenMTTranslator:
+        """Get or create a translator instance based on type.
 
         Args:
             device: Device to use ('cuda', 'cpu', or None for auto)
             gpu_device: GPU device ID
             force_reload: Force reload of the model
+            translator_type: Type of translator ('local' for DictaLM, 'qwen' for Qwen-MT)
+            translation_batch_size: Optional batch size for Qwen translator
 
         Returns:
-            DictaLMTranslator instance with loaded model
+            Translator instance (DictaLMTranslator or QwenMTTranslator)
         """
-        # Create cache key with more specificity to prevent collisions
-        # Include model name and torch dtype for differentiation
+        # Handle Qwen translator (online, no caching needed)
+        if translator_type == "qwen":
+            console.print("[cyan]Creating Qwen-MT translator[/cyan]")
+            try:
+                return QwenMTTranslator(batch_size=translation_batch_size)
+            except TranslationError as e:
+                console.print(f"[red]✗ Failed to create Qwen-MT translator:[/red] {e}")
+                raise
+
+        # Handle local DictaLM translator (cache for efficiency)
         torch_dtype = (
             "bfloat16"
             if (device == "cuda" or (device is None and torch.cuda.is_available()))

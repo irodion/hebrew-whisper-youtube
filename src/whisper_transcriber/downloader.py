@@ -62,6 +62,16 @@ class AudioDownloader:
             "outtmpl": audio_path,
             "quiet": True,
             "no_warnings": True,
+            "ignoreerrors": False,  # Keep error reporting for important issues
+            "extractor_retries": 1,  # Reduce retries to avoid 403 loops
+            "fragment_retries": 1,  # Reduce fragment retries
+            # Use headers to avoid 403 errors instead of disabling SSL
+            "http_headers": {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                )
+            },
             "progress_hooks": [self._progress_hook],
             "postprocessors": [
                 {
