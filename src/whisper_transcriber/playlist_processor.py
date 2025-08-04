@@ -51,8 +51,10 @@ class PlaylistProcessor:
         start_index: int = 1,
         keep_audio: bool = False,
         translate: bool = False,
+        translator: str = "local",
         verbose: bool = False,
         download_workers: int | None = None,
+        translation_batch_size: int | None = None,
     ) -> None:
         """Initialize the playlist processor.
 
@@ -63,8 +65,10 @@ class PlaylistProcessor:
             start_index: Start processing from this video index (1-based)
             keep_audio: Whether to keep downloaded audio files
             translate: Whether to translate transcripts
+            translator: Translation model to use ('local' or 'qwen')
             verbose: Whether to show verbose output
             download_workers: Number of concurrent download workers (default: 3)
+            translation_batch_size: Batch size for translation (1-50)
         """
         self.output_dir = output_dir
         self.transcriber = transcriber
@@ -72,8 +76,10 @@ class PlaylistProcessor:
         self.start_index = start_index
         self.keep_audio = keep_audio
         self.translate = translate
+        self.translator = translator
         self.verbose = verbose
         self.download_workers = download_workers or self.DEFAULT_DOWNLOAD_WORKERS
+        self.translation_batch_size = translation_batch_size
 
         # Concurrent processing components
         self.download_queue: queue.Queue[Any] = queue.Queue(maxsize=self.DOWNLOAD_QUEUE_SIZE)
@@ -193,6 +199,14 @@ class PlaylistProcessor:
             "quiet": True,
             "no_warnings": True,
             "extract_flat": True,  # Don't download, just get info
+            "extractor_retries": 1,  # Reduce retries to avoid 403 loops
+            # Use headers to avoid 403 errors instead of disabling SSL
+            "http_headers": {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+                )
+            },
         }
 
         with YoutubeDL(ydl_opts) as ydl:
@@ -446,6 +460,8 @@ class PlaylistProcessor:
                 output_format=output_format,
                 metadata=metadata,
                 translate_to_english=self.translate,
+                translator_type=self.translator,
+                translation_batch_size=self.translation_batch_size,
             )
 
             # Handle translation results
@@ -506,6 +522,7 @@ class PlaylistProcessor:
                 output_format=output_format,
                 metadata=metadata,
                 translate_to_english=self.translate,
+                translator_type=self.translator,
             )
 
             # Handle translation results

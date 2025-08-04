@@ -12,7 +12,6 @@ import torch
 from faster_whisper import WhisperModel
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
-from .model_manager import get_model_manager
 from .resource_manager import managed_gpu_memory
 from .utils import GPUError, TranslationError, check_cuda_availability, console
 
@@ -155,6 +154,8 @@ class WhisperTranscriber:
         output_format: str = "text",
         metadata: dict[str, Any] | None = None,
         translate_to_english: bool = False,
+        translator_type: str = "local",
+        translation_batch_size: int | None = None,
     ) -> str | tuple[str, str]:
         """Transcribe audio file.
 
@@ -165,6 +166,8 @@ class WhisperTranscriber:
             output_format: 'text', 'srt', 'vtt', or 'json'
             metadata: Optional video metadata dict for enhanced output
             translate_to_english: If True and Hebrew detected, also translate to English
+            translator_type: Translation model to use ('local' for DictaLM, 'qwen' for Qwen-MT)
+            translation_batch_size: Batch size for translation (1-50)
 
         Returns:
             Transcribed text in requested format, or tuple of (original, translated) if translating
@@ -182,7 +185,14 @@ class WhisperTranscriber:
 
         # Handle translation if requested
         if self._should_translate(translate_to_english, language, info):
-            translated = self._perform_translation(segments_list, output_format, metadata, info)
+            translated = self._perform_translation(
+                segments_list,
+                output_format,
+                metadata,
+                info,
+                translator_type,
+                translation_batch_size,
+            )
             if translated:
                 return original, translated
 
@@ -297,6 +307,8 @@ class WhisperTranscriber:
         output_format: str,
         metadata: dict[str, Any] | None,
         info: Any,
+        translator_type: str = "local",
+        translation_batch_size: int | None = None,
     ) -> str | None:
         """Perform translation and return formatted translated output."""
         console.rule("[bold]Step 2.5/3: Translating to English[/bold]")
@@ -304,25 +316,90 @@ class WhisperTranscriber:
         # Use GPU memory management context
         with managed_gpu_memory():
             # Get translator from model manager for efficiency
+            from .model_manager import get_model_manager
+
             model_manager = get_model_manager()
 
             try:
                 translator = model_manager.get_translator(
-                    device=self.device, gpu_device=self.gpu_device
+                    device=self.device,
+                    gpu_device=self.gpu_device,
+                    translator_type=translator_type,
+                    translation_batch_size=translation_batch_size,
                 )
 
-                # Translate segments
-                translated_segments = translator.translate_segments(segments_list)
+                # Handle Qwen translator with JSON-based approach
+                translated_obj = None
+                transcript_obj = None
+
+                if translator_type == "qwen":
+                    from .qwen_translator import QwenMTTranslator
+
+                    if isinstance(translator, QwenMTTranslator):
+                        # Create transcript JSON object
+                        transcript_obj = self._create_transcript_json(segments_list, metadata, info)
+
+                        # Translate using JSON approach
+                        translated_obj = translator.translate_transcript_json(transcript_obj)
+
+                        if not translated_obj:
+                            return None
+
+                        # Extract translated segments for formatting
+                        translated_segments = translated_obj.get("segments", [])
+
+                        # Convert to format expected by formatting methods
+                        formatted_segments = []
+                        for segment in translated_segments:
+                            translated_text = segment.get("translated_text", "[UNTRANSLATED]")
+                            formatted_segments.append(
+                                {
+                                    "start": segment["start"],
+                                    "end": segment["end"],
+                                    "text": translated_text,
+                                }
+                            )
+                    else:
+                        # Fallback to segment-based translation
+                        translated_segments = translator.translate_segments(segments_list)
+                        formatted_segments = translated_segments
+                else:
+                    # Local translator - use segment-based translation
+                    translated_segments = translator.translate_segments(segments_list)
+                    formatted_segments = translated_segments
 
                 # Format translated output
                 if output_format == "text":
-                    translated = self._format_as_text(translated_segments)
+                    translated = self._format_as_text(formatted_segments)
                 elif output_format == "srt":
-                    translated = self._format_as_srt(translated_segments)
+                    translated = self._format_as_srt(formatted_segments)
                 elif output_format == "vtt":
-                    translated = self._format_as_vtt(translated_segments)
+                    translated = self._format_as_vtt(formatted_segments)
                 elif output_format == "json":
-                    translated = self._format_as_json(translated_segments, metadata or {}, info)
+                    # For JSON format with Qwen, include the full translated object
+                    if translator_type == "qwen" and translated_obj is not None:
+                        # Create enhanced JSON with both original and translated content
+                        from .metadata_formatter import MetadataFormatter
+
+                        clean_metadata = MetadataFormatter.format_json_metadata(
+                            (metadata or {}).copy()
+                        )
+                        clean_metadata["detected_language"] = getattr(info, "language", None)
+                        clean_metadata["transcription_model"] = self.model_size
+
+                        output = {
+                            "metadata": clean_metadata,
+                            "transcript": translated_obj.get("segments", []),
+                            "full_text": {
+                                "original": self._clean_tagged_text(
+                                    transcript_obj.get("full_text", "") if transcript_obj else ""
+                                ),
+                                "translated": translated_obj.get("translated_full_text", ""),
+                            },
+                        }
+                        translated = json.dumps(output, ensure_ascii=False, indent=2)
+                    else:
+                        translated = self._format_as_json(formatted_segments, metadata or {}, info)
                 else:
                     return None  # Should not happen due to earlier validation
 
@@ -416,6 +493,129 @@ class WhisperTranscriber:
         output = {"metadata": clean_metadata, "transcript": transcript_segments}
 
         return json.dumps(output, ensure_ascii=False, indent=2)
+
+    def _create_transcript_json(
+        self,
+        segments_list: list[Any],
+        metadata: dict[str, Any] | None,
+        info: Any,
+    ) -> dict[str, Any]:
+        """Create a structured JSON object for translation.
+
+        Args:
+            segments_list: List of transcript segments
+            metadata: Optional video metadata
+            info: Transcription info
+
+        Returns:
+            Dictionary with full_text, segments, and metadata
+        """
+        # Extract full text with line markers, each on a new line
+        # IMPORTANT: Include ALL segments to maintain alignment, even empty ones
+        full_text_lines = []
+        for segment in segments_list:
+            text = segment.text.strip() if segment.text else ""
+            full_text_lines.append(f"<new_line>{text}</new_line>")
+
+        # Create structured object
+        return {
+            "full_text": "\n".join(full_text_lines),
+            "segments": [
+                {
+                    "start": segment.start,
+                    "end": segment.end,
+                    "text": segment.text.strip() if segment.text else "",
+                }
+                for segment in segments_list
+            ],
+            "metadata": metadata or {},
+            "transcription_info": {
+                "detected_language": getattr(info, "language", None),
+                "transcription_model": self.model_size,
+            },
+        }
+
+    def _extract_text_with_tags(self, segments_list: list[Any]) -> str:
+        """Extract text from segments with new_line tags.
+
+        Args:
+            segments_list: List of transcript segments
+
+        Returns:
+            Tagged text string
+        """
+        lines = []
+        for segment in segments_list:
+            text = segment.text.strip() if segment.text else ""
+            lines.append(f"<new_line>{text}</new_line>")
+        return "\n".join(lines)
+
+    def _parse_tagged_translation(self, translated_text: str) -> list[str]:
+        """Parse translated text by new_line tags.
+
+        Args:
+            translated_text: Translated text with tags
+
+        Returns:
+            List of translated lines
+        """
+        import re
+
+        # Extract content between tags
+        pattern = r"<new_line>(.*?)</new_line>"
+        matches = re.findall(pattern, translated_text, re.DOTALL)
+
+        # If no tags found, try splitting by newlines as fallback
+        if not matches:
+            return translated_text.split("\n")
+
+        return [match.strip() for match in matches]
+
+    def _merge_translation_to_json(
+        self,
+        transcript_obj: dict[str, Any],
+        translated_lines: list[str],
+    ) -> dict[str, Any]:
+        """Merge translated lines back into transcript JSON.
+
+        Args:
+            transcript_obj: Original transcript JSON object
+            translated_lines: List of translated lines
+
+        Returns:
+            Updated transcript object with translations
+        """
+        # Create a copy to avoid modifying original
+        result = transcript_obj.copy()
+
+        # Update segments with translated text
+        segments = result["segments"]
+        for i, segment in enumerate(segments):
+            if i < len(translated_lines):
+                segment["translated_text"] = translated_lines[i]
+            else:
+                segment["translated_text"] = "[UNTRANSLATED]"
+
+        # Add translated full text
+        result["translated_full_text"] = "\n".join(translated_lines)
+
+        return result
+
+    def _clean_tagged_text(self, tagged_text: str) -> str:
+        """Remove new_line tags while preserving line breaks.
+
+        Args:
+            tagged_text: Text with <new_line>...</new_line> tags
+
+        Returns:
+            Clean text with tags removed but line breaks preserved
+        """
+        import re
+
+        # Replace each <new_line>content</new_line> with just content
+        # The newlines between tags are already preserved from join()
+        pattern = r"<new_line>(.*?)</new_line>"
+        return re.sub(pattern, r"\1", tagged_text)
 
     def cleanup(self) -> None:
         """Clean up model from memory."""
